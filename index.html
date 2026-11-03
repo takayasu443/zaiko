@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d6efd">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="在庫">
+<title>CM農場 在庫アプリ</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand">
+    <span class="logo">在庫</span>
+    <div>
+      <div class="title">CM農場 入出庫</div>
+      <div class="sub"><span id="who">未設定</span> · <span id="sync-label">端末のみ</span></div>
+    </div>
+  </div>
+  <button id="sync-btn" class="icon-btn" title="今すぐ同期" aria-label="今すぐ同期">
+    <span id="sync-dot" class="dot off"></span>⟳
+  </button>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main id="view"></main>
+
+<nav id="tabs">
+  <button data-tab="out"><span class="ic">📤</span>持ち出し</button>
+  <button data-tab="in"><span class="ic">📥</span>入荷</button>
+  <button data-tab="stock"><span class="ic">📦</span>在庫</button>
+  <button data-tab="log"><span class="ic">🕒</span>履歴</button>
+  <button data-tab="settings"><span class="ic">⚙️</span>設定</button>
+</nav>
+
+<div id="sheet" class="sheet hidden" role="dialog" aria-modal="true">
+  <div class="sheet-bg"></div>
+  <div class="sheet-body"></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="items-default.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

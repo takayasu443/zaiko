@@ -1,0 +1,17 @@
+{
+  "name": "CM農場 在庫アプリ（入出庫）",
+  "short_name": "在庫",
+  "description": "事務所前・コンテナ左右・冷蔵庫の薬品・資材の持ち出し／入荷をスマホで記録し、全員のスマホで共有する",
+  "lang": "ja",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6fa",
+  "theme_color": "#0d6efd",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
