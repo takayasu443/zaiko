@@ -17,10 +17,10 @@
 <body>
 <header id="top">
   <div class="brand">
-    <span class="logo">在庫</span>
+    <span class="logo" aria-hidden="true">在庫</span>
     <div>
       <div class="title">CM農場 入出庫</div>
-      <div class="sub"><span id="who">未設定</span> · <span id="sync-label">端末のみ</span></div>
+      <div class="sub"><span id="who">未設定</span> · <span id="sync-label" aria-live="polite">端末のみ</span></div>
     </div>
   </div>
   <button id="sync-btn" class="icon-btn" title="今すぐ同期" aria-label="今すぐ同期">
@@ -28,24 +28,25 @@
   </button>
 </header>
 
-<div id="banner" class="banner hidden"></div>
+<div id="banner" class="banner hidden" role="status"></div>
 
 <main id="view"></main>
 
-<nav id="tabs">
-  <button data-tab="out"><span class="ic">📤</span>持ち出し</button>
-  <button data-tab="in"><span class="ic">📥</span>入荷</button>
-  <button data-tab="stock"><span class="ic">📦</span>在庫</button>
-  <button data-tab="log"><span class="ic">🕒</span>履歴</button>
-  <button data-tab="settings"><span class="ic">⚙️</span>設定</button>
+<nav id="tabs" aria-label="メニュー">
+  <button data-tab="out"><span class="ic" aria-hidden="true">📤</span>持ち出し</button>
+  <button data-tab="in"><span class="ic" aria-hidden="true">📥</span>入荷</button>
+  <button data-tab="stock"><span class="ic" aria-hidden="true">📦</span>在庫</button>
+  <button data-tab="log"><span class="ic" aria-hidden="true">🕒</span>履歴</button>
+  <button data-tab="settings"><span class="ic" aria-hidden="true">⚙️</span>設定</button>
 </nav>
 
 <div id="sheet" class="sheet hidden" role="dialog" aria-modal="true">
   <div class="sheet-bg"></div>
   <div class="sheet-body"></div>
 </div>
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
+<script src="core.js"></script>
 <script src="items-default.js"></script>
 <script src="app.js"></script>
 </body>

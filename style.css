@@ -105,3 +105,5 @@ ol.steps li{margin:4px 0}
 .sum .card{margin:0;text-align:center;padding:10px 6px}
 .sum .n{font-size:22px;font-weight:700}
 .sum .l{font-size:11px;color:var(--muted)}
+
+.dot.pending{background:var(--warn)}

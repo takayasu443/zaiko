@@ -1,35 +1,52 @@
-/* サービスワーカー：オフラインでも開けるようにし、新しい版が出たら次回起動時に自動で入れ替える */
-const VERSION = 'v1.0.0';
-const CACHE = 'zaiko-' + VERSION;
+/* サービスワーカー：オフラインでも開けるようにし、新しい版は利用者が「更新」を押したときだけ切り替える
+ * - install で skipWaiting しない（入力中に勝手に切り替わらない）
+ * - キャッシュの削除は 'zaiko-' で始まるものだけ（同じオリジンの別アプリを消さない）
+ * - 正常応答(res.ok)だけをキャッシュし、HTMLの代替は画面遷移（navigate）のときだけ返す
+ */
+const VERSION = 'v1.1.0';
+const PREFIX = 'zaiko-';
+const CACHE = PREFIX + VERSION;
 const SHELL = [
-  './', './index.html', './style.css', './app.js', './items-default.js',
-  './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'
+  './', './index.html', './style.css', './core.js', './app.js', './items-default.js',
+  './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
 ];
 
-self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k.startsWith(PREFIX) && k !== CACHE).map((k) => caches.delete(k)));
+    await self.clients.claim();
+  })());
 });
 
-// アプリ本体はネット優先（更新を素早く反映）、取れなければキャッシュ。Dropbox等のAPIは素通し。
-self.addEventListener('fetch', (e) => {
-  const url = new URL(e.request.url);
-  if (url.origin !== self.location.origin || e.request.method !== 'GET') return;
-  e.respondWith(
-    fetch(e.request).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(e.request, copy));
+// アプリ本体はネット優先（更新を素早く反映）、取れなければキャッシュ。Dropbox等の外部APIは素通し。
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin || req.method !== 'GET') return;
+  const scope = new URL(self.registration.scope).pathname;
+  if (!url.pathname.startsWith(scope)) return;                 // このアプリの公開資産だけを扱う
+  event.respondWith((async () => {
+    try {
+      const res = await fetch(req);
+      if (res.ok) {
+        const copy = res.clone();
+        event.waitUntil(caches.open(CACHE).then((c) => c.put(req, copy)));
+      }
       return res;
-    }).catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html')))
-  );
+    } catch (e) {
+      const cached = await caches.match(req);
+      if (cached) return cached;
+      if (req.mode === 'navigate') { const index = await caches.match('./index.html'); if (index) return index; }
+      throw e;
+    }
+  })());
 });
 
-self.addEventListener('message', (e) => {
-  if (e.data === 'SKIP_WAITING') self.skipWaiting();
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') self.skipWaiting();
 });
