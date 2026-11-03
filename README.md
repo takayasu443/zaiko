@@ -1,5 +1,11 @@
 # CM農場 在庫アプリ（入出庫）試作版 v1.0.0
 
+> **現在の稼働状況（2026-11-03 設定済み）**
+> - 公開URL：**https://takayasu443.github.io/zaiko/**（GitHub Pages、GitHubアカウント takayasu443）
+> - Dropbox App：CM-Farm-Zaiko（App Key `pk33rnxs2oyvn40`、千葉さんの Dropbox の `/CM農場在庫アプリ` フォルダに保存）
+> - 配布用：`招待リンク（社内限定）.txt` のリンクを LINE で送る
+> - 更新：`python 在庫アプリ/tools/deploy.py --bump` で公開URLに反映（各スマホは次回起動時に自動更新）
+
 専務の発言（2026-11-03 打合せ）をもとに作った、**スマホで「持ち出し」「入荷」をピッと記録する**アプリです。
 インストール不要の Web アプリ（PWA）で、ホーム画面に追加すると普通のアプリと同じように使えます。
 
@@ -56,7 +62,7 @@
 
 ## 導入手順（管理者：千葉さん向け）
 
-### STEP 1　アプリを https で公開する（全員が同じURLで開けるようにする）
+### STEP 1　アプリを https で公開する（全員が同じURLで開けるようにする）　※設定済み
 
 Dropbox / OneDrive の共有リンクは HTML をそのまま表示しないため、**無料の静的ホスティング**に置きます。
 おすすめは GitHub Pages（無料・https・URL固定）。Netlify Drop（フォルダをドラッグするだけ）でも可。
@@ -70,7 +76,7 @@ GitHub Pages の場合：
 更新するときは同じ手順でファイルを上書きし、`sw.js` の `VERSION` を上げる（例 v1.0.1）と、
 各スマホは次に開いたときに「新しいバージョンがあります → 更新」が出て自動で入れ替わります。
 
-### STEP 2　Dropbox 同期を設定する（1回だけ）
+### STEP 2　Dropbox 同期を設定する（1回だけ）　※設定済み
 
 1. https://www.dropbox.com/developers/apps → **Create app**
    - Scoped access → **Full Dropbox**（共有フォルダの中を使うため）→ 名前「CM農場在庫アプリ」
