@@ -2,7 +2,9 @@
 
 > **現在の稼働状況（2026-11-03 設定済み）**
 > - 公開URL：**https://takayasu443.github.io/zaiko/**（GitHub Pages、GitHubアカウント takayasu443）
-> - Dropbox App：CM-Farm-Zaiko（App Key `pk33rnxs2oyvn40`、千葉さんの Dropbox の `/CM農場在庫アプリ` フォルダに保存）
+> - Dropbox App：**CM-Farm-Zaiko-Team**（App Key `xpi3sqe9imxtjck`、チームアカウント chiba@tokachinopork.com で作成）
+> - 保存先：チーム共有フォルダ **/十勝野ポーク チーム フォルダ/CM農場在庫アプリ**（専務・社長も PC の Dropbox から見られる）
+> - ※ 旧アプリ CM-Farm-Zaiko（個人 gmail アカウント、`/CM農場在庫アプリ`）は使わない。古い招待リンクを開いた端末は新しい招待リンクで上書きする
 > - 配布用：`招待リンク（社内限定）.txt` のリンクを LINE で送る
 > - 更新：`python 在庫アプリ/tools/deploy.py --bump` で公開URLに反映（各スマホは次回起動時に自動更新）
 
@@ -98,8 +100,8 @@ GitHub Pages の場合（設定済み。再構築するときの手順）：
 
 ### STEP 2　Dropbox 同期を設定する（1回だけ）　※設定済み
 
-1. https://www.dropbox.com/developers/apps → **Create app**
-   - Scoped access → **Full Dropbox**（共有フォルダの中を使うため）→ 名前「CM農場在庫アプリ」
+1. https://www.dropbox.com/developers/apps → **Create app**（**チームアカウント**でログインして作る。個人アカウントで作るとチーム共有フォルダにアクセスできない）
+   - Scoped access → **Full Dropbox**（共有フォルダの中を使うため）→ 名前「CM-Farm-Zaiko-Team」
 2. Settings タブ：**Redirect URIs** に STEP 1 の URL（例 `https://xxx.github.io/zaiko/`）を追加
 3. Permissions タブ：`files.metadata.read` `files.content.read` `files.content.write` `account_info.read` にチェック → Submit
 4. Settings タブの **App key** を控える
@@ -107,7 +109,8 @@ GitHub Pages の場合（設定済み。再構築するときの手順）：
 6. 「接続テスト」で OK が出れば完了。Dropbox 側に `master.json` と `events/` ができます
 
 ※ Dropbox アプリは開発モードのままで **50 人まで**接続できます（審査不要）。
-※ 保存先フォルダは **全員が招待されている共有フォルダの中** にしてください（別の場所だと他の人から見えません）。
+※ 保存先フォルダは **チーム共有フォルダの中** にします。Dropbox Business のチームスペースにあるフォルダは API の「パスの基準」をチームスペースにする必要があり、アプリと PC ツールは接続時に自動で判定します（設定画面に「チームスペース基準」と出ます）。
+※ 「アプリ側で Dropbox にログインする人」はアプリの所有者（作成したアカウント）だけで済みます。他の人は招待リンクで接続するので、Dropbox アカウントは不要です。
 
 ### STEP 3　LINE で配る
 
@@ -132,10 +135,21 @@ LINE 公式の **LINEミニアプリ（LIFF）** として登録すると、イ�
 
 ## PC側ツール（tools/zaiko_sync.py）
 
-初回だけ Dropbox にログインします（ブラウザが開くので「許可」。認証情報は OneDrive の外に保存）。
+初回だけ Dropbox にログインします（ブラウザが開くので「許可」。認証情報は OneDrive の外 `%LOCALAPPDATA%\zaiko-app\dropbox_auth.json` に保存）。
+チーム共有フォルダがあれば保存先は自動で「/十勝野ポーク チーム フォルダ/CM農場在庫アプリ」になります。
 
 ```bash
 python 在庫アプリ/tools/zaiko_sync.py login
+```
+
+保存先の確認・変更と、スマホ用の招待リンクの書き出し（`招待リンク（社内限定）.txt` を更新）：
+
+```bash
+python 在庫アプリ/tools/zaiko_sync.py folders
+```
+
+```bash
+python 在庫アプリ/tools/zaiko_sync.py invite
 ```
 
 **発注したら入荷待ちに登録する**（数量が入っている行だけ。同じ発注書を2回入れても二重にならない）
@@ -172,6 +186,12 @@ python 在庫アプリ/tools/zaiko_sync.py master
 アプリの設定 →「発注書の初期マスタを追加読込」でも、足りない品目だけがその端末に追加されます。
 
 ## 変更履歴
+
+- **v1.2.1（2026-11-05）** Dropbox をチームアカウント・チーム共有フォルダに切替
+  - Dropbox Business のチームスペース対応（API のパス基準ヘッダ。接続時に自動判定、招待リンクにも引き継ぐ）
+  - 設定の保存先フォルダを「一覧から選ぶ」で選択可能
+  - PC ツールに folders / setbase / invite コマンドを追加。login 時にチーム共有フォルダを自動で保存先にする
+  - 新しい Dropbox アプリ CM-Farm-Zaiko-Team（チームアカウント）。品目マスタは新しい保存先に送信済み
 
 - **v1.2.0（2026-11-05）** 専務の要望（Excel「在庫管理」シート）と選択シートの回答を反映
   - 持ち出しは「持ち出し先（ステージ）」で記録。その他のときだけ名前。前回の選択を記憶

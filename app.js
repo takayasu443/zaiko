@@ -1,4 +1,4 @@
-/* CM農場 在庫アプリ（入出庫）  v1.2.0
+/* CM農場 在庫アプリ（入出庫）  v1.2.1
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
@@ -14,7 +14,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const C = window.ZKCore;
 const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉'];
@@ -40,7 +40,7 @@ const state = {
   users: load(LS.users, DEFAULT_USERS.slice()),
   cfg: Object.assign({
     user: '', pollSec: 30, liffId: '', lastStage: '',
-    dropbox: { appKey: '', basePath: '/CM農場在庫アプリ', refreshToken: '', accessToken: '', expiresAt: 0, account: '' }
+    dropbox: { appKey: '', basePath: '/CM農場在庫アプリ', refreshToken: '', accessToken: '', expiresAt: 0, account: '', pathRoot: '' }
   }, load(LS.cfg, {})),
   revs: load(LS.revs, {}),                      // Dropbox上のファイルrev（変更のないファイルは再取得しない）
   sent: Object.assign({ events: '', master: '', expected: '', settings: '', base: '' }, load(LS.sent, {})),   // 最後に送信した内容の指紋
@@ -651,7 +651,7 @@ function renderSettings() {
       <details ${connected ? '' : 'open'} style="margin-top:8px"><summary>接続設定</summary>
         ${secure ? '' : '<p class="small" style="color:var(--danger)">※ Dropbox連携は https（またはlocalhost）で開いたときだけ使えます。</p>'}
         <div class="field"><label for="dbx-key">Dropbox App Key（管理者が dropbox.com/developers で作成）</label><input id="dbx-key" value="${esc(dbx.appKey)}" autocapitalize="off" autocomplete="off"></div>
-        <div class="field"><label for="dbx-path">保存先フォルダ（Dropbox内のパス）</label><input id="dbx-path" value="${esc(dbx.basePath)}" placeholder="/CM農場在庫アプリ"></div>
+        <div class="field"><label for="dbx-path">保存先フォルダ（Dropbox内のパス。チーム共有フォルダの中を推奨）</label><div class="row"><input id="dbx-path" class="grow" value="${esc(dbx.basePath)}" placeholder="/十勝野ポーク チーム フォルダ/CM農場在庫アプリ"><button class="btn sm secondary" id="dbx-pick" ${connected ? '' : 'disabled'}>一覧から選ぶ</button></div>${dbx.pathRoot ? '<p class="small muted" style="margin:4px 0 0">チームスペース（Dropbox Business）のフォルダを基準にしています</p>' : ''}</div>
         <div class="field"><label for="poll">自動更新の間隔（秒）</label><input id="poll" type="number" inputmode="numeric" min="10" value="${state.cfg.pollSec}"></div>
         <div class="row wrap">
           <button class="btn sm" id="dbx-save">保存</button>
@@ -720,11 +720,22 @@ function renderSettings() {
     state.cfg.pollSec = Math.max(10, Math.round(+$('#poll').value) || 30); state.cfg.liffId = $('#liff').value.trim(); persistMeta();
   };
   $('#dbx-save').onclick = () => { readDbxForm(); toast('保存しました'); startPolling(); scheduleSync(); };
+  $('#dbx-pick').onclick = async () => {
+    let folders;
+    try { await refreshAccountInfo(); const r = await dbxRPC('files/list_folder', { path: '', recursive: false }); folders = r.entries.filter((e) => e['.tag'] === 'folder').map((e) => e.name); }
+    catch (e) { toast('フォルダ一覧を取得できません：' + e.message, 5000); return; }
+    const body = openSheet(`<h2>保存先フォルダを選ぶ</h2><p class="small muted">選んだフォルダの中に「CM農場在庫アプリ」フォルダを作って保存します。チームで共有しているフォルダを選んでください。</p>
+      <div class="list">${folders.map((f) => `<button class="item" data-f="${esc(f)}"><div class="grow"><div class="nm">📁 ${esc(f)}</div></div></button>`).join('') || '<div class="empty">フォルダがありません</div>'}
+      <button class="item" data-f=""><div class="grow"><div class="nm">（ルート直下に置く）</div></div></button></div>
+      <button class="btn secondary" id="close" style="margin-top:10px">閉じる</button>`);
+    $('#close', body).onclick = closeSheet;
+    body.querySelectorAll('.item[data-f]').forEach((b) => b.onclick = () => { const f = b.dataset.f; $('#dbx-path').value = (f ? '/' + f : '') + '/CM農場在庫アプリ'; closeSheet(); readDbxForm(); toast('保存先を変更しました。右上の⟳で同期します'); scheduleSync(); renderSettings(); });
+  };
   $('#dbx-login').onclick = () => { readDbxForm(); if (!dbx.appKey) { toast('App Key を入れてください'); return; } dbxLogin(); };
   $('#dbx-test').onclick = async () => {
     readDbxForm();
     let acct;
-    try { const r = await dbxRPC('users/get_current_account', null); acct = r.email || r.name?.display_name || ''; dbx.account = acct; persistMeta(); }
+    try { await refreshAccountInfo(); acct = dbx.account; }
     catch (e) { toast('Dropbox認証エラー：' + e.message, 5000); return; }
     const ok = await syncNow(true, true);
     toast(ok ? `接続OK（${acct}）・同期も完了しました` : `認証はOK（${acct}）ですが同期でエラー：${state.sync.msg}`, 6000);
@@ -735,7 +746,7 @@ function renderSettings() {
     Object.assign(dbx, { refreshToken: '', accessToken: '', expiresAt: 0, account: '' }); state.revs = {}; persistMeta(); setSync('off'); renderSettings();
   };
   $('#invite').onclick = () => {
-    const payload = { v: 1, appKey: dbx.appKey, basePath: dbx.basePath, refreshToken: dbx.refreshToken, users: state.users, liffId: state.cfg.liffId, pollSec: state.cfg.pollSec };
+    const payload = { v: 1, appKey: dbx.appKey, basePath: dbx.basePath, pathRoot: dbx.pathRoot || '', refreshToken: dbx.refreshToken, users: state.users, liffId: state.cfg.liffId, pollSec: state.cfg.pollSec };
     const link = url + '?openExternalBrowser=1#setup=' + b64url(new TextEncoder().encode(JSON.stringify(payload)));
     shareText(`CM農場 在庫アプリの招待リンクです。タップして開き、「ホーム画面に追加」してください。\n${link}`, '在庫アプリ 招待リンク');
   };
@@ -889,10 +900,20 @@ async function dbxHandleRedirect() {
     const j = await r.json(); if (!r.ok) throw new Error(j.error_description || j.error || r.statusText);
     Object.assign(state.cfg.dropbox, { accessToken: j.access_token, refreshToken: j.refresh_token || state.cfg.dropbox.refreshToken, expiresAt: Date.now() + (j.expires_in - 60) * 1000 });
     state.revs = {}; persistMeta();
-    try { const a = await dbxRPC('users/get_current_account', null); state.cfg.dropbox.account = a.email || a.name?.display_name || ''; persistMeta(); } catch (e) { }
-    state.tab = 'settings'; toast('Dropboxに接続しました');
+    try { await refreshAccountInfo(); } catch (e) { }
+    state.tab = 'settings'; toast('Dropboxに接続しました。保存先フォルダを確認してください', 4000);
   } catch (e) { toast('Dropbox認証エラー：' + e.message, 5000); }
   return true;
+}
+/** アカウント情報を取り直し、チームスペース（Dropbox Business）のときはパスの基準をチームスペースにする */
+async function refreshAccountInfo() {
+  const a = await dbxRPC('users/get_current_account', null);
+  const d = state.cfg.dropbox;
+  d.account = (a.email || a.name?.display_name || '') + (a.team ? `（${a.team.name}）` : '');
+  const ri = a.root_info || {};
+  d.pathRoot = ri.root_namespace_id && ri.home_namespace_id && ri.root_namespace_id !== ri.home_namespace_id ? ri.root_namespace_id : '';
+  persistMeta();
+  return a;
 }
 async function ensureToken() {
   const d = state.cfg.dropbox;
@@ -905,16 +926,18 @@ async function ensureToken() {
 }
 class DbxError extends Error { constructor(status, body) { let m = body; try { const j = JSON.parse(body); m = j.error_summary || j.error?.['.tag'] || body; } catch (e) { } super(`${status} ${m}`); this.status = status; this.body = body; } }
 // 通信は差し替え可能にしておく（テスト用）
+/** Dropbox Business のチームスペースにあるフォルダを使うときは、パスの基準をチームスペースにする */
+const pathRootHeader = () => (state.cfg.dropbox.pathRoot ? { 'Dropbox-API-Path-Root': JSON.stringify({ '.tag': 'root', root: state.cfg.dropbox.pathRoot }) } : {});
 const net = {
   async rpc(path, arg) {
     const token = await ensureToken();
-    const r = await fetch('https://api.dropboxapi.com/2/' + path, { method: 'POST', headers: Object.assign({ Authorization: 'Bearer ' + token }, arg === null ? {} : { 'Content-Type': 'application/json' }), body: arg === null ? undefined : JSON.stringify(arg) });
+    const r = await fetch('https://api.dropboxapi.com/2/' + path, { method: 'POST', headers: Object.assign({ Authorization: 'Bearer ' + token }, path.startsWith('files/') ? pathRootHeader() : {}, arg === null ? {} : { 'Content-Type': 'application/json' }), body: arg === null ? undefined : JSON.stringify(arg) });
     if (!r.ok) throw new DbxError(r.status, await r.text());
     return r.json();
   },
   async download(path) {
     const token = await ensureToken();
-    const r = await fetch('https://content.dropboxapi.com/2/files/download', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Dropbox-API-Arg': apiArg({ path }) } });
+    const r = await fetch('https://content.dropboxapi.com/2/files/download', { method: 'POST', headers: Object.assign({ Authorization: 'Bearer ' + token, 'Dropbox-API-Arg': apiArg({ path }) }, pathRootHeader()) });
     if (r.status === 409) { const t = await r.text(); if (t.includes('not_found')) return null; throw new DbxError(409, t); }
     if (!r.ok) throw new DbxError(r.status, await r.text());
     const meta = JSON.parse(r.headers.get('dropbox-api-result') || '{}');
@@ -922,7 +945,7 @@ const net = {
   },
   async upload(path, text, mode) {
     const token = await ensureToken();
-    const r = await fetch('https://content.dropboxapi.com/2/files/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream', 'Dropbox-API-Arg': apiArg({ path, mode: mode || 'overwrite', autorename: false, mute: true }) }, body: new Blob([text]) });
+    const r = await fetch('https://content.dropboxapi.com/2/files/upload', { method: 'POST', headers: Object.assign({ Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream', 'Dropbox-API-Arg': apiArg({ path, mode: mode || 'overwrite', autorename: false, mute: true }) }, pathRootHeader()), body: new Blob([text]) });
     if (!r.ok) throw new DbxError(r.status, await r.text());
     return r.json();
   },
@@ -1055,7 +1078,7 @@ function handleSetupLink() {
     if (typeof p.appKey !== 'string' || typeof p.refreshToken !== 'string' || !p.appKey || !p.refreshToken) throw new Error('リンクの内容が不正です');
     if (state.cfg.dropbox.refreshToken && !confirm('すでにDropbox接続があります。招待リンクの設定で上書きしますか？')) return;
     const basePathNew = typeof p.basePath === 'string' && p.basePath.startsWith('/') ? p.basePath : state.cfg.dropbox.basePath;
-    Object.assign(state.cfg.dropbox, { appKey: p.appKey, basePath: basePathNew, refreshToken: p.refreshToken, accessToken: '', expiresAt: 0, account: '' });
+    Object.assign(state.cfg.dropbox, { appKey: p.appKey, basePath: basePathNew, refreshToken: p.refreshToken, accessToken: '', expiresAt: 0, account: '', pathRoot: typeof p.pathRoot === 'string' ? p.pathRoot : '' });
     if (Array.isArray(p.users)) for (const u of p.users) if (typeof u === 'string' && u && u.length <= 50 && !state.users.includes(u)) state.users.push(u);
     if (typeof p.liffId === 'string') state.cfg.liffId = p.liffId; if (Number.isInteger(p.pollSec) && p.pollSec >= 10) state.cfg.pollSec = p.pollSec;
     state.revs = {}; persistMeta(); toast('共有設定を取り込みました', 3500);
