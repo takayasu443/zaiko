@@ -11,7 +11,11 @@
   const CATEGORIES = ['薬品', '飼料', '器具'];
   const LOCATIONS = ['事務所前', 'コンテナ左', 'コンテナ右', '冷蔵庫'];
   const EVENT_TYPES = ['in', 'out', 'set', 'void'];
+  /** 持ち出し先（ステージ）。「その他」のときだけ名前を入れる */
+  const STAGES = ['交配舎', '分娩舎', '離乳舎', '肥育舎', '洗浄チーム', '水小屋（柴田）', 'その他'];
+  const EXPECTED_STATUS = ['waiting', 'received', 'cancelled'];
   const ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
+  const DAY = 86400e3;
   const isId = (v) => typeof v === 'string' && ID_RE.test(v);
   const isInt = (v) => Number.isSafeInteger(v);
   const isStr = (v, max) => typeof v === 'string' && v.length <= max;
@@ -46,15 +50,20 @@
       if (!EVENT_TYPES.includes(e.type)) bad('種類');
       if (!isInt(e.qty)) bad('数量');
       if (e.user != null && !isStr(e.user, 200)) bad('担当者');
+      if (e.stage != null && !isStr(e.stage, 50)) bad('持ち出し先');
       if (e.note != null && !isStr(e.note, 2000)) bad('メモ');
       if (e.name != null && !isStr(e.name, 300)) bad('品名');
       if (e.unit != null && !isStr(e.unit, 50)) bad('単位');
+      if (e.expectedId != null && !isId(e.expectedId)) bad('入荷予定ID');
       if (e.type === 'void') { if (!isId(e.ref) || e.qty !== 0) bad('取消の参照先'); }
       else if (!isId(e.itemId) || e.qty < (e.type === 'set' ? 0 : 1)) bad('品目・数量');
       seen.add(e.id);
     });
     return value;
   }
+
+  const strOr = (bad, v, max, d) => (v == null ? d : (isStr(v, max) ? v : bad('文字項目')));
+  const intOr = (bad, v, d, why) => (v == null ? d : (isInt(v) && v >= 0 ? v : bad(why)));
 
   /** 品目マスタ全体を検証し、欠けている項目は既定値で補った新しい配列を返す */
   function validateItems(value) {
@@ -67,18 +76,57 @@
       if (seen.has(it.id)) bad('ID重複 ' + it.id);
       seen.add(it.id);
       if (!isStr(it.name, 200) || !it.name) bad('品名');
-      const str = (v, max, d) => (v == null ? d : (isStr(v, max) ? v : bad('文字項目')));
-      const out = {
+      return {
         id: it.id, name: it.name,
-        spec: str(it.spec, 200, ''), unit: str(it.unit, 50, '個'),
+        spec: strOr(bad, it.spec, 200, ''), unit: strOr(bad, it.unit, 50, '個'),
         category: CATEGORIES.includes(it.category) ? it.category : bad('種別'),
-        location: str(it.location, 50, LOCATIONS[0]), supplier: str(it.supplier, 100, ''), note: str(it.note, 500, ''),
-        min: it.min == null ? 0 : (isInt(it.min) && it.min >= 0 ? it.min : bad('発注点')),
+        location: strOr(bad, it.location, 50, LOCATIONS[0]), supplier: strOr(bad, it.supplier, 100, ''), note: strOr(bad, it.note, 500, ''),
+        min: intOr(bad, it.min, 0, '発注点'),
+        useDays: intOr(bad, it.useDays, 0, '使用間隔'),
+        alertMutedUntil: intOr(bad, it.alertMutedUntil, 0, 'アラート解除日時'),
         active: it.active == null ? true : (typeof it.active === 'boolean' ? it.active : bad('使用中フラグ')),
-        updatedAt: it.updatedAt == null ? 0 : (isInt(it.updatedAt) && it.updatedAt >= 0 ? it.updatedAt : bad('更新日時')),
+        updatedAt: intOr(bad, it.updatedAt, 0, '更新日時'),
       };
-      return out;
     });
+  }
+
+  /** 入荷予定（受け入れ確認リスト）の検証 */
+  function validateExpected(value) {
+    if (!Array.isArray(value)) throw new Error('入荷予定の形式が不正です');
+    const seen = new Set();
+    return value.map((x, i) => {
+      const bad = (why) => { throw new Error(`入荷予定 ${i + 1}件目が不正です：${why}`); };
+      if (!x || typeof x !== 'object') bad('空');
+      if (!isId(x.id)) bad('ID');
+      if (seen.has(x.id)) bad('ID重複 ' + x.id);
+      seen.add(x.id);
+      if (x.itemId != null && x.itemId !== '' && !isId(x.itemId)) bad('品目ID');
+      if (!isStr(x.name, 200) || !x.name) bad('品名');
+      if (!isInt(x.qty) || x.qty < 1) bad('数量');
+      return {
+        id: x.id, itemId: x.itemId || '', name: x.name,
+        spec: strOr(bad, x.spec, 200, ''), unit: strOr(bad, x.unit, 50, '個'), qty: x.qty,
+        supplier: strOr(bad, x.supplier, 100, ''), location: strOr(bad, x.location, 50, ''),
+        category: CATEGORIES.includes(x.category) ? x.category : '薬品',
+        orderedAt: intOr(bad, x.orderedAt, 0, '発注日'), source: strOr(bad, x.source, 200, ''),
+        status: EXPECTED_STATUS.includes(x.status) ? x.status : 'waiting',
+        receivedAt: intOr(bad, x.receivedAt, 0, '入荷日'), receivedBy: strOr(bad, x.receivedBy, 200, ''),
+        receivedEventId: x.receivedEventId == null || x.receivedEventId === '' ? '' : (isId(x.receivedEventId) ? x.receivedEventId : bad('入荷記録ID')),
+        updatedAt: intOr(bad, x.updatedAt, 0, '更新日時'),
+      };
+    });
+  }
+
+  /** 共有設定（飼養頭数など） */
+  function validateSettings(value) {
+    const v = value && typeof value === 'object' ? value : {};
+    const bad = (why) => { throw new Error('共有設定が不正です：' + why); };
+    return { herd: intOr(bad, v.herd, 0, '飼養頭数'), updatedAt: intOr(bad, v.updatedAt, 0, '更新日時') };
+  }
+
+  /** 入荷済み・取消済みの古い予定は60日で落とす（全端末で同じ規則なので再出現しない） */
+  function pruneExpected(list, now) {
+    return list.filter((x) => x.status === 'waiting' || now - (x.updatedAt || 0) < 60 * DAY);
   }
 
   /** 全端末で同じ順になる並べ方（時刻→ID）。同時刻の棚卸と持出でも結果が揃う */
@@ -108,8 +156,8 @@
     return { events: added.length ? local.concat(added) : local, added: added.length };
   }
 
-  /** 品目マスタの統合。updatedAt が新しい方を採用、同時刻なら内容(JSON)の大きい方で全端末一致させる */
-  function mergeMaster(local, remote) {
+  /** ID付き文書（品目マスタ・入荷予定）の統合。updatedAt が新しい方を採用、同時刻なら内容(JSON)の大きい方で全端末一致させる */
+  function mergeById(local, remote) {
     const byId = new Map(local.map((it) => [it.id, it]));
     let changed = false;
     for (const r of remote) {
@@ -120,6 +168,48 @@
       if (takeRemote && JSON.stringify(r) !== JSON.stringify(l)) { byId.set(r.id, r); changed = true; }
     }
     return { items: changed ? [...byId.values()] : local, changed };
+  }
+  const mergeMaster = mergeById;
+
+  /**
+   * アラート計算（専務の要望）
+   *  idle : 使うはずなのに動いていない（品目の「使用間隔の目安」日数を超えて持ち出しがない）
+   *  over : 今週の持ち出しが過去の週平均の2倍以上（減りすぎ）
+   *  under: 今週の持ち出しが過去の週平均の3割以下（使わな過ぎ）
+   *  発注点以下(low)は在庫画面で別に表示。品目の alertMutedUntil までは出さない（「確認」ボタンで解除）
+   */
+  function computeAlerts(items, events, now) {
+    const { stock, voided } = computeStock(events);
+    const lastOut = {}, firstTs = {}, outs = {};
+    for (const e of events) {
+      if (e.type === 'void' || voided.has(e.id)) continue;
+      if (!firstTs[e.itemId] || e.ts < firstTs[e.itemId]) firstTs[e.itemId] = e.ts;
+      if (e.type === 'out') { (outs[e.itemId] = outs[e.itemId] || []).push(e); if (!lastOut[e.itemId] || e.ts > lastOut[e.itemId]) lastOut[e.itemId] = e.ts; }
+    }
+    const alerts = [];
+    for (const it of items) {
+      if (it.active === false || (it.alertMutedUntil || 0) > now) continue;
+      const s = stock[it.id] || 0;
+      if (it.useDays > 0 && s > 0) {
+        const last = lastOut[it.id] || firstTs[it.id];
+        if (last && now - last > it.useDays * DAY) {
+          alerts.push({ itemId: it.id, kind: 'idle', text: `${Math.floor((now - last) / DAY)}日間 持ち出しがありません（目安 ${it.useDays}日ごと）` });
+          continue;
+        }
+      }
+      const f = firstTs[it.id]; const list = outs[it.id] || [];
+      if (!f || now - f < 28 * DAY || !list.length) continue;
+      const weekStart = now - 7 * DAY;
+      const baseWeeks = Math.min(8, Math.floor((weekStart - f) / (7 * DAY)));
+      if (baseWeeks < 3) continue;
+      const baseStart = weekStart - baseWeeks * 7 * DAY;
+      let recent = 0, base = 0;
+      for (const e of list) { if (e.ts >= weekStart) recent += e.qty; else if (e.ts >= baseStart) base += e.qty; }
+      const avg = base / baseWeeks;
+      if (avg >= 1 && recent >= 3 && recent >= 2 * avg) alerts.push({ itemId: it.id, kind: 'over', text: `今週の持ち出し ${recent}${it.unit} が週平均 ${avg.toFixed(1)}${it.unit} の2倍以上です（減りすぎ）` });
+      else if (avg >= 2 && recent <= 0.3 * avg) alerts.push({ itemId: it.id, kind: 'under', text: `今週の持ち出し ${recent}${it.unit} が週平均 ${avg.toFixed(1)}${it.unit} より大きく少ないです（使わな過ぎ）` });
+    }
+    return alerts;
   }
 
   /** Dropbox-API-Arg ヘッダ用：非ASCIIを \uXXXX に */
@@ -140,5 +230,5 @@
     return t;
   }
 
-  return { CATEGORIES, LOCATIONS, EVENT_TYPES, ID_RE, fingerprint, readQty, validateEvents, validateItems, orderEvents, computeStock, mergeEvents, mergeMaster, apiArg, b64url, unb64url, buildOrderText };
+  return { CATEGORIES, LOCATIONS, EVENT_TYPES, STAGES, EXPECTED_STATUS, ID_RE, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, orderEvents, computeStock, mergeEvents, mergeById, mergeMaster, computeAlerts, apiArg, b64url, unb64url, buildOrderText };
 });

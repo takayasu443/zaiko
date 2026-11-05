@@ -1,27 +1,24 @@
-/* CM農場 在庫アプリ（入出庫）  v1.1.0
+/* CM農場 在庫アプリ（入出庫）  v1.2.0
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
- * - 共通ロジックは core.js（検証・在庫計算・統合）。この file は画面と保存・同期の制御。
+ * - 共通ロジックは core.js（検証・在庫計算・統合・アラート）。この file は画面と保存・同期の制御。
  *
- * v1.1.0 の主な改善（コードレビュー 2026-11-03 対応）
- *   ・未送信の判定を「送信済み内容の指紋」で行い、再起動後や送信中の追加入力も取りこぼさない
- *   ・端末保存に失敗したら成功扱いにしない（入力画面を閉じない）
- *   ・同じ端末の別タブと記録を上書きし合わない（書込み前に再読込して統合）
- *   ・取り込むデータは全件検証してから反映。壊れたファイルは版(rev)を進めない
- *   ・品目マスタ送信が競合し続けたら「同期済み」にしない。接続テストも結果を正しく表示
- *   ・バックアップ復元で持ち込んだ他端末の記録も共有される（復元ファイルとして送信）
- *   ・HTML属性への埋め込みも全てエスケープ。同時刻の記録順を全端末で統一
- *   ・アプリ更新は「更新」ボタンを押したときだけ切り替える
+ * v1.2.0（2026-11-05 専務の要望を反映）
+ *   ・持ち出しは「名前」ではなく「持ち出し先（交配舎・分娩舎・離乳舎・肥育舎・洗浄チーム・水小屋・その他）」で記録。その他のときだけ名前
+ *   ・入荷待ち（発注済み・未着）を共有し、届いたら「入荷した」ボタン1つで入荷記録。PCの発注書から tools/zaiko_sync.py で登録
+ *   ・アラート：使うはずなのに動いていない／減りすぎ／使わな過ぎ。「確認」ボタンで1週間非表示（全員に共有）
+ *   ・飼養頭数（共有設定）
+ * v1.1.0 コードレビュー対応（未送信の指紋判定・保存失敗の扱い・取込検証・復元ファイル・更新ボタン方式 など）
  */
 (() => {
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const C = window.ZKCore;
-const { CATEGORIES, LOCATIONS, fingerprint, readQty, validateEvents, validateItems, mergeEvents, mergeMaster, apiArg, b64url, unb64url } = C;
+const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉'];
-const LS = { items: 'zk_items', events: 'zk_events', cfg: 'zk_cfg', device: 'zk_device', users: 'zk_users', pkce: 'zk_pkce', revs: 'zk_revs', dismiss: 'zk_dismiss', sent: 'zk_sent', recovery: 'zk_recovery' };
+const LS = { items: 'zk_items', events: 'zk_events', cfg: 'zk_cfg', device: 'zk_device', users: 'zk_users', pkce: 'zk_pkce', revs: 'zk_revs', dismiss: 'zk_dismiss', sent: 'zk_sent', recovery: 'zk_recovery', expected: 'zk_expected', settings: 'zk_settings' };
 
 // ---------- 保存まわり ----------
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
@@ -39,22 +36,19 @@ let deviceId = load(LS.device, null);
 if (!deviceId || !C.ID_RE.test(deviceId)) { deviceId = 'd' + uid(); save(LS.device, deviceId); }
 
 const state = {
-  items: null,
-  events: [],
+  items: [], events: [], expected: [], settings: { herd: 0, updatedAt: 0 },
   users: load(LS.users, DEFAULT_USERS.slice()),
   cfg: Object.assign({
-    user: '', pollSec: 30, liffId: '',
+    user: '', pollSec: 30, liffId: '', lastStage: '',
     dropbox: { appKey: '', basePath: '/CM農場在庫アプリ', refreshToken: '', accessToken: '', expiresAt: 0, account: '' }
   }, load(LS.cfg, {})),
   revs: load(LS.revs, {}),                      // Dropbox上のファイルrev（変更のないファイルは再取得しない）
-  sent: Object.assign({ events: '', master: '', base: '' }, load(LS.sent, {})),   // 最後に送信した内容の指紋
+  sent: Object.assign({ events: '', master: '', expected: '', settings: '', base: '' }, load(LS.sent, {})),   // 最後に送信した内容の指紋
   recovery: load(LS.recovery, []),              // 復元で持ち込んだ他端末の記録（送信待ち）
   tab: 'out',
   filters: { q: '', loc: '', cat: '', lowOnly: false, logType: '', logLimit: 400 },
   sync: { status: 'off', last: 0, msg: '', busy: false },
-  installPrompt: null,
-  swWaiting: null,
-  updateRequested: false,
+  installPrompt: null, swWaiting: null, updateRequested: false,
 };
 // 起動時の読み込み（壊れていても落ちないように検証つき）
 try { state.items = validateItems(load(LS.items, null) || []); } catch (e) { console.warn('品目マスタを読めませんでした', e); state.items = []; }
@@ -63,9 +57,13 @@ if (!state.items.length) {
   save(LS.items, state.items);
 }
 try { state.events = validateEvents(load(LS.events, [])); } catch (e) { console.warn('記録の一部を読めませんでした', e); state.events = (load(LS.events, []) || []).filter((x) => x && x.id); }
+try { state.expected = pruneExpected(validateExpected(load(LS.expected, [])), Date.now()); } catch (e) { console.warn('入荷予定を読めませんでした', e); state.expected = []; }
+try { state.settings = validateSettings(load(LS.settings, {})); } catch (e) { state.settings = { herd: 0, updatedAt: 0 }; }
 
 const persistItems = () => writeLS(LS.items, state.items);
 const persistEvents = () => writeLS(LS.events, state.events);
+const persistExpected = () => writeLS(LS.expected, state.expected);
+const persistSettings = () => writeLS(LS.settings, state.settings);
 const persistMeta = () => { save(LS.cfg, state.cfg); save(LS.users, state.users); save(LS.revs, state.revs); save(LS.sent, state.sent); save(LS.recovery, state.recovery); };
 
 /** 別タブなどが先に保存した記録を取り込んでから書く（上書き事故の防止） */
@@ -77,7 +75,8 @@ function reloadEventsFromStorage() {
 }
 window.addEventListener('storage', (e) => {
   if (e.key === LS.events) { if (reloadEventsFromStorage()) { if (state.tab !== 'settings') render(); else updateHeader(); } }
-  if (e.key === LS.items) { try { const r = mergeMaster(state.items, validateItems(load(LS.items, []))); if (r.changed) { state.items = r.items; render(); } } catch (err) { } }
+  if (e.key === LS.items) { try { const r = mergeById(state.items, validateItems(load(LS.items, []))); if (r.changed) { state.items = r.items; render(); } } catch (err) { } }
+  if (e.key === LS.expected) { try { const r = mergeById(state.expected, validateExpected(load(LS.expected, []))); if (r.changed) { state.expected = r.items; render(); } } catch (err) { } }
 });
 
 // ---------- 在庫計算（記録が変わるまで使い回す） ----------
@@ -89,11 +88,13 @@ function computeStock() {
 }
 const itemById = (id) => state.items.find((i) => i.id === id);
 const isLow = (it, s) => it.min > 0 && (s[it.id] || 0) <= it.min;
+const waitingExpected = () => state.expected.filter((x) => x.status === 'waiting');
+const currentAlerts = () => C.computeAlerts(state.items, state.events, Date.now());
 
 /** 記録を1件追加。端末に保存できたときだけ state に反映する。失敗時は例外 */
 function addEvent(ev) {
   const it = ev.itemId ? itemById(ev.itemId) : null;
-  ev = Object.assign({ id: uid(), ts: Date.now(), user: state.cfg.user, dev: deviceId }, ev, it ? { name: it.name, unit: it.unit } : {});
+  ev = Object.assign({ id: uid(), ts: Date.now(), user: state.cfg.user || '', dev: deviceId }, ev, it ? { name: it.name, unit: it.unit } : {});
   validateEvents([ev]);
   reloadEventsFromStorage();
   const next = state.events.concat([ev]);
@@ -103,6 +104,26 @@ function addEvent(ev) {
   return ev;
 }
 const SAVE_FAIL_MSG = '端末に保存できませんでした（空き容量を確認してください）。入力はそのまま残しています';
+
+/** 品目マスタを更新して保存（失敗時は元に戻して例外） */
+function updateItems(mutate) {
+  const prev = state.items;
+  const next = prev.map((x) => Object.assign({}, x));
+  mutate(next);
+  validateItems(next);
+  state.items = next;
+  try { persistItems(); } catch (e) { state.items = prev; throw e; }
+  scheduleSync();
+}
+function updateExpected(mutate) {
+  const prev = state.expected;
+  const next = prev.map((x) => Object.assign({}, x));
+  mutate(next);
+  validateExpected(next);
+  state.expected = next;
+  try { persistExpected(); } catch (e) { state.expected = prev; throw e; }
+  scheduleSync();
+}
 
 // ---------- 画面部品 ----------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -126,13 +147,13 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpe
 
 const fmtTime = (ts) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const fmtDate = (ts) => { const d = new Date(ts); return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}(${'日月火水木金土'[d.getDay()]})`; };
-const fmtDT = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()} ${fmtTime(ts)}`; };
+const fmtMD = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()}`; };
+const fmtDT = (ts) => `${fmtMD(ts)} ${fmtTime(ts)}`;
 
 function tags(it) {
   return `<span class="tag ${catClass(it.category)}">${esc(it.category)}</span><span class="tag loc">${esc(it.location)}</span>` +
     (it.supplier ? `<span class="tag">${esc(it.supplier)}</span>` : '');
 }
-
 function filterChips(withCat = true) {
   const f = state.filters;
   const chip = (key, val, label) => `<button class="chip ${f[key] === val ? 'active' : ''}" data-f="${esc(key)}" data-v="${esc(val)}">${esc(label)}</button>`;
@@ -162,17 +183,21 @@ function itemRow(it, s, extra = '') {
 /** 履歴表示用：品目が消えていても記録時の品名で表示 */
 const evName = (e) => { const it = e.itemId && itemById(e.itemId); return it ? it.name : (e.name || '(削除済み品目)'); };
 const evUnit = (e) => { const it = e.itemId && itemById(e.itemId); return it ? it.unit : (e.unit || ''); };
+/** 「誰が／どこへ」の表示：持ち出しは持ち出し先、その他のときは名前も */
+const evWho = (e) => (e.type === 'out' && e.stage) ? (e.stage + (e.stage === 'その他' && e.user ? '・' + e.user : '')) : (e.user || '—');
 
 // ---------- タブ：持ち出し／入荷 ----------
 function renderPick(mode) {
   const isOut = mode === 'out';
   view.innerHTML = `
     <h2>${isOut ? '📤 持ち出し登録' : '📥 入荷登録'} <span class="muted small">タップして数量を入れる</span></h2>
+    ${isOut ? '' : '<div id="expected-box"></div>'}
     <input class="search" id="q" type="search" placeholder="品名・規格・仕入先で検索" value="${esc(state.filters.q)}" autocomplete="off">
     ${filterChips()}
     <div id="recent"></div>
     <div class="list" id="list"></div>`;
   const list = $('#list'); const recent = $('#recent');
+  if (!isOut) renderExpectedBox();
   const draw = () => {
     const { stock } = computeStock();
     const items = filteredItems();
@@ -189,43 +214,180 @@ function renderPick(mode) {
       }
       if (rec.length) recent.innerHTML = `<h3>最近${isOut ? '持ち出した' : '入荷した'}もの</h3><div class="list" style="margin-bottom:12px">${rec.map((it) => itemRow(it, stock)).join('')}</div>`;
     }
-    view.querySelectorAll('.item[data-id]').forEach((b) => b.addEventListener('click', () => openQtySheet(itemById(b.dataset.id), mode)));
+    view.querySelectorAll('.list .item[data-id]').forEach((b) => b.addEventListener('click', () => openQtySheet(itemById(b.dataset.id), mode)));
   };
   $('#q').addEventListener('input', (e) => { state.filters.q = e.target.value; draw(); });
   bindChips(view, draw);
   draw();
 }
 
+/** 持ち出し／入荷の数量入力。持ち出しは「持ち出し先」を必ず選ぶ（その他のときだけ名前） */
 function openQtySheet(it, mode) {
   if (!it) return;
-  if (!state.cfg.user) { openUserSheet(() => openQtySheet(it, mode)); return; }
   const isOut = mode === 'out'; const { stock } = computeStock(); const cur = stock[it.id] || 0;
+  const stageSel = { v: state.cfg.lastStage || '' };
   const body = openSheet(`
     <h2>${esc(it.name)}</h2>
     <div class="muted small">${esc(it.spec || '')} ${tags(it)}</div>
     <div class="row" style="margin-top:8px"><div class="grow">現在の在庫</div><div style="font-size:20px;font-weight:700">${cur} ${esc(it.unit)}</div></div>
+    ${isOut ? `<div class="field"><label>持ち出し先（どこで使う）</label>
+      <div class="user-grid" id="stages">${STAGES.map((s) => `<button type="button" class="${s === stageSel.v ? 'active' : ''}" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>
+      <div class="field ${stageSel.v === 'その他' ? '' : 'hidden'}" id="other-wrap"><label for="other-name">名前（その他のときは必ず）</label><input id="other-name" list="names" value="${esc(state.cfg.user)}" maxlength="50" placeholder="例：千葉"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>` : ''}
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
     <div class="quick">${[1, 2, 5, 10].map((n) => `<button data-q="${n}">${n}</button>`).join('')}</div>
-    <div class="field"><label for="note">メモ（任意：どこで使う、誰に頼まれた など）</label><input id="note" type="text" placeholder="例：A棟 分娩舎" maxlength="200"></div>
-    <button class="btn ${isOut ? 'out' : 'in'}" id="go">${isOut ? '持ち出し' : '入荷'}を登録（${esc(state.cfg.user)}）</button>
+    <div class="field"><label for="note">メモ（任意）</label><input id="note" type="text" placeholder="${isOut ? '例：豚房番号、用途' : '例：伝票番号'}" maxlength="200"></div>
+    <button class="btn ${isOut ? 'out' : 'in'}" id="go">${isOut ? '持ち出しを登録' : '入荷を登録'}${!isOut && state.cfg.user ? '（' + esc(state.cfg.user) + '）' : ''}</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
   const qty = $('#qty', body);
   const setQ = (n) => { qty.value = String(Math.max(1, Math.round(n) || 1)); };
   $('#minus', body).onclick = () => setQ(+qty.value - 1);
   $('#plus', body).onclick = () => setQ(+qty.value + 1);
   body.querySelectorAll('[data-q]').forEach((b) => b.onclick = () => setQ(+b.dataset.q));
+  if (isOut) body.querySelectorAll('#stages button').forEach((b) => b.onclick = () => {
+    stageSel.v = b.dataset.s;
+    body.querySelectorAll('#stages button').forEach((x) => x.classList.toggle('active', x === b));
+    $('#other-wrap', body).classList.toggle('hidden', stageSel.v !== 'その他');
+    if (stageSel.v === 'その他') $('#other-name', body).focus();
+  });
   $('#cancel', body).onclick = closeSheet;
   $('#go', body).onclick = () => {
     let n; try { n = readQty(qty.value, mode); } catch (e) { toast(e.message); qty.focus(); return; }
-    if (isOut && cur - n < 0 && !confirm(`在庫(${cur})より多い数です。このまま登録しますか？\n（在庫数が合っていない場合は、あとで「在庫」→ 棚卸 で直せます）`)) return;
-    try { addEvent({ type: mode, itemId: it.id, qty: n, note: $('#note', body).value.trim() }); }
+    const ev = { type: mode, itemId: it.id, qty: n, note: $('#note', body).value.trim() };
+    if (isOut) {
+      if (!stageSel.v) { toast('持ち出し先を選んでください'); return; }
+      ev.stage = stageSel.v;
+      if (stageSel.v === 'その他') {
+        const nm = $('#other-name', body).value.trim();
+        if (!nm) { toast('「その他」のときは名前を入れてください'); $('#other-name', body).focus(); return; }
+        ev.user = nm; if (!state.users.includes(nm)) { state.users.push(nm); save(LS.users, state.users); }
+      }
+      if (cur - n < 0 && !confirm(`在庫(${cur})より多い数です。このまま登録しますか？\n（在庫数が合っていない場合は、あとで「在庫」→ 棚卸 で直せます）`)) return;
+    }
+    try { addEvent(ev); }
     catch (e) { console.error(e); toast(SAVE_FAIL_MSG, 6000); return; }     // 画面は閉じない
+    if (isOut && state.cfg.lastStage !== stageSel.v) { state.cfg.lastStage = stageSel.v; save(LS.cfg, state.cfg); }
     closeSheet();
     const after = computeStock().stock[it.id] || 0;
-    toast(`${isOut ? '持ち出し' : '入荷'} ${it.name} ${n}${it.unit} を登録（在庫 ${after}）`);
+    toast(`${isOut ? ev.stage + ' へ持ち出し' : '入荷'} ${it.name} ${n}${it.unit}（在庫 ${after}）`);
     render();
   };
   setTimeout(() => qty.select(), 50);
+}
+
+// ---------- 入荷待ち（発注済み・未着） ----------
+function renderExpectedBox() {
+  const box = $('#expected-box'); if (!box) return;
+  const waiting = waitingExpected().sort((a, b) => (b.orderedAt || 0) - (a.orderedAt || 0) || a.supplier.localeCompare(b.supplier));
+  const groups = new Map();
+  for (const x of waiting) { const k = `${x.supplier || '（仕入先不明）'}|${x.orderedAt ? fmtMD(x.orderedAt) : ''}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+  let html = `<div class="card" style="background:#f3fbf5;border-color:#b7e4c7"><div class="row"><h3 style="margin:0" class="grow">📦 入荷待ち（発注済み・未着）${waiting.length ? ` <span class="tag">${waiting.length}件</span>` : ''}</h3><button class="btn sm secondary" id="exp-add">予定を追加</button></div>`;
+  if (!waiting.length) html += `<p class="muted small" style="margin:6px 0 0">発注書から登録すると、ここに並びます。届いたら「入荷した」を押すだけで入荷記録になります。</p>`;
+  for (const [k, list] of groups) {
+    const [sup, md] = k.split('|');
+    html += `<div class="row" style="margin-top:10px"><div class="grow"><b>${esc(sup)}</b> <span class="muted small">${md ? md + ' 発注' : ''}・${list.length}件</span></div><button class="btn sm in" data-exp-all="${esc(k)}">全部入荷</button></div>`;
+    for (const x of list) {
+      const known = x.itemId && itemById(x.itemId);
+      html += `<div class="log" style="align-items:center"><div class="what"><b>${esc(x.name)}</b> <span class="muted small">${esc(x.spec)}</span>${known ? '' : ' <span class="tag" style="background:#fff3cd;color:#7a5a00">品目未登録</span>'}<div class="muted small">${x.qty}${esc(x.unit)}${x.location ? '・' + esc(x.location) : ''}</div></div>
+        <button class="btn sm in" data-exp="${esc(x.id)}">入荷した</button><button data-exp-cancel="${esc(x.id)}" aria-label="取消" title="この予定を取消">×</button></div>`;
+    }
+  }
+  html += '</div>';
+  box.innerHTML = html;
+  $('#exp-add', box).onclick = openExpectedAddSheet;
+  box.querySelectorAll('[data-exp]').forEach((b) => b.onclick = () => openReceiveSheet(state.expected.find((x) => x.id === b.dataset.exp)));
+  box.querySelectorAll('[data-exp-all]').forEach((b) => b.onclick = () => receiveAll(groups.get(b.dataset.expAll) || []));
+  box.querySelectorAll('[data-exp-cancel]').forEach((b) => b.onclick = () => {
+    const x = state.expected.find((y) => y.id === b.dataset.expCancel); if (!x) return;
+    if (!confirm(`「${x.name} ${x.qty}${x.unit}」の入荷予定を取り消しますか？（届かない・発注取消のとき）`)) return;
+    try { updateExpected((list) => { const t = list.find((y) => y.id === x.id); t.status = 'cancelled'; t.updatedAt = Date.now(); }); } catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
+    toast('取り消しました'); render();
+  });
+}
+/** 入荷予定に対応する品目を決める（未登録なら作る） */
+function resolveExpectedItem(x) {
+  let it = x.itemId && itemById(x.itemId);
+  if (!it) {
+    const norm = (s) => String(s || '').replace(/[\s　]/g, '').toLowerCase();
+    it = state.items.find((i) => norm(i.name) === norm(x.name) && norm(i.spec) === norm(x.spec)) || state.items.find((i) => norm(i.name) === norm(x.name));
+  }
+  if (it) {
+    if (it.active === false) updateItems((list) => { const t = list.find((i) => i.id === it.id); t.active = true; t.updatedAt = Date.now(); });
+    return itemById(it.id);
+  }
+  const created = { id: 'i' + uid(), name: x.name, spec: x.spec || '', unit: x.unit || '個', category: x.category || '薬品', location: x.location || LOCATIONS[0], supplier: x.supplier || '', note: '入荷予定から自動追加', min: 0, useDays: 0, alertMutedUntil: 0, active: true, updatedAt: Date.now() };
+  updateItems((list) => { list.push(created); });
+  return itemById(created.id);
+}
+function receiveExpected(x, n, who) {
+  const it = resolveExpectedItem(x);
+  const ev = addEvent({ type: 'in', itemId: it.id, qty: n, user: who || state.cfg.user || '', note: `入荷（${x.supplier || '仕入先不明'}）`, expectedId: x.id });
+  updateExpected((list) => {
+    const t = list.find((y) => y.id === x.id); const now = Date.now();
+    if (n < t.qty) { t.qty -= n; t.updatedAt = now; }                       // 一部入荷：残りは待ちのまま
+    else { t.status = 'received'; t.receivedAt = now; t.receivedBy = who || state.cfg.user || ''; t.receivedEventId = ev.id; t.updatedAt = now; }
+  });
+  return it;
+}
+function openReceiveSheet(x) {
+  if (!x) return;
+  const body = openSheet(`
+    <h2>入荷：${esc(x.name)}</h2>
+    <div class="muted small">${esc(x.spec)} ${x.supplier ? '／' + esc(x.supplier) : ''} ${x.orderedAt ? '／' + fmtMD(x.orderedAt) + ' 発注' : ''}</div>
+    <p class="small muted">届いた数を確認して「入荷を登録」。予定より少なければ残りは入荷待ちに残ります。</p>
+    <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="${x.qty}" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
+    <div class="field"><label for="who">受け取った人（任意）</label><input id="who" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
+    <button class="btn in" id="go">入荷を登録</button>
+    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+  const qty = $('#qty', body);
+  $('#minus', body).onclick = () => { qty.value = String(Math.max(1, (+qty.value || 1) - 1)); };
+  $('#plus', body).onclick = () => { qty.value = String((+qty.value || 0) + 1); };
+  $('#cancel', body).onclick = closeSheet;
+  $('#go', body).onclick = () => {
+    let n; try { n = readQty(qty.value, 'in'); } catch (e) { toast(e.message); return; }
+    if (n > x.qty && !confirm(`予定（${x.qty}）より多い数です。このまま登録しますか？`)) return;
+    let it; try { it = receiveExpected(x, n, $('#who', body).value.trim()); } catch (e) { console.error(e); toast(SAVE_FAIL_MSG, 6000); return; }
+    closeSheet(); toast(`入荷 ${it.name} ${n}${it.unit} を登録（在庫 ${computeStock().stock[it.id] || 0}）`); render();
+  };
+}
+function receiveAll(list) {
+  if (!list.length) return;
+  if (!confirm(`${list.length}件を予定どおりの数量で入荷登録します。よろしいですか？\n（数が違う品目があれば、個別に「入荷した」で登録してください）`)) return;
+  let ok = 0;
+  try { for (const x of list) { receiveExpected(x, x.qty, state.cfg.user || ''); ok++; } }
+  catch (e) { console.error(e); toast(`${ok}件登録したところで保存に失敗しました`, 6000); render(); return; }
+  toast(`${ok}件の入荷を登録しました`); render();
+}
+function openExpectedAddSheet() {
+  const sel = { it: null };
+  const body = openSheet(`
+    <h2>入荷予定を追加</h2>
+    <p class="small muted">発注した品目と数量を入れると「入荷待ち」に並びます（全員に共有）。まとめて登録するときは PC の発注書から tools/zaiko_sync.py を使うと早いです。</p>
+    <div class="field"><label for="ex-q">品目を検索</label><input id="ex-q" class="search" placeholder="品名で検索" autocomplete="off"></div>
+    <div class="list" id="ex-list" style="max-height:200px;overflow:auto"></div>
+    <div class="field"><label>選んだ品目</label><div id="ex-sel" class="pre">未選択</div></div>
+    <div class="row">
+      <div class="field grow"><label for="ex-qty">数量</label><input id="ex-qty" type="number" inputmode="numeric" min="1" step="1" value="1"></div>
+      <div class="field grow"><label for="ex-sup">仕入先</label><input id="ex-sup" maxlength="100"></div>
+    </div>
+    <button class="btn" id="save" disabled>入荷待ちに追加</button>
+    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+  const lst = $('#ex-list', body);
+  const draw = () => {
+    const q = $('#ex-q', body).value.trim().toLowerCase();
+    const items = state.items.filter((i) => i.active !== false && (!q || (i.name + i.spec + i.supplier).toLowerCase().includes(q))).slice(0, 8);
+    lst.innerHTML = items.map((i) => `<button class="item" data-id="${esc(i.id)}"><div class="grow"><div class="nm">${esc(i.name)}</div><div class="sp">${esc(i.spec)} ${tags(i)}</div></div></button>`).join('');
+    lst.querySelectorAll('.item').forEach((b) => b.onclick = () => { sel.it = itemById(b.dataset.id); $('#ex-sel', body).textContent = `${sel.it.name} ${sel.it.spec}（${sel.it.unit}）`; $('#ex-sup', body).value = sel.it.supplier; $('#save', body).disabled = false; });
+  };
+  $('#ex-q', body).oninput = draw; draw();
+  $('#cancel', body).onclick = closeSheet;
+  $('#save', body).onclick = () => {
+    if (!sel.it) return;
+    let n; try { n = readQty($('#ex-qty', body).value, 'in'); } catch (e) { toast(e.message); return; }
+    const now = Date.now();
+    const x = { id: 'x' + uid(), itemId: sel.it.id, name: sel.it.name, spec: sel.it.spec, unit: sel.it.unit, qty: n, supplier: $('#ex-sup', body).value.trim(), location: sel.it.location, category: sel.it.category, orderedAt: now, source: 'app', status: 'waiting', receivedAt: 0, receivedBy: '', receivedEventId: '', updatedAt: now };
+    try { updateExpected((list) => { list.push(x); }); } catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
+    closeSheet(); toast('入荷待ちに追加しました'); render();
+  };
 }
 
 // ---------- タブ：在庫 ----------
@@ -233,6 +395,7 @@ function renderStock() {
   const { stock, voided } = computeStock();
   const active = state.items.filter((i) => i.active !== false);
   const low = active.filter((i) => isLow(i, stock));
+  const alerts = currentAlerts();
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const outToday = state.events.filter((e) => e.type === 'out' && e.ts >= today.getTime() && !voided.has(e.id)).length;
   view.innerHTML = `
@@ -242,6 +405,9 @@ function renderStock() {
       <div class="card" ${low.length ? 'style="border-color:#f5c2c7"' : ''}><div class="n" style="color:${low.length ? 'var(--danger)' : 'inherit'}">${low.length}</div><div class="l">発注点以下</div></div>
       <div class="card"><div class="n">${outToday}</div><div class="l">今日の持ち出し（件）</div></div>
     </div>
+    ${alerts.length ? `<div class="card" style="background:#fff4e5;border-color:#ffd8a8"><h3 style="margin:0 0 6px">⚠ アラート（${alerts.length}）${state.settings.herd ? ` <span class="muted small">飼養頭数 ${state.settings.herd}頭</span>` : ''}</h3>
+      ${alerts.map((a) => { const it = itemById(a.itemId); return it ? `<div class="log" style="align-items:center"><div class="what"><b>${esc(it.name)}</b> <span class="tag loc">${esc(it.location)}</span><div class="small">${esc(a.text)}</div></div><button class="btn sm secondary" data-ack="${esc(it.id)}">確認</button></div>` : ''; }).join('')}
+      <p class="muted small" style="margin:6px 0 0">「確認」を押すと1週間表示されません（全員の画面で）。使用間隔の目安は品目の編集で設定できます。</p></div>` : ''}
     <div class="row" style="margin-bottom:8px">
       <button class="btn sm" id="share-order" ${low.length ? '' : 'disabled'}>発注候補を共有（${low.length}）</button>
       <button class="btn sm secondary" id="low-only">${state.filters.lowOnly ? '全部表示' : '発注点以下だけ'}</button>
@@ -249,7 +415,11 @@ function renderStock() {
     <input class="search" id="q" type="search" placeholder="品名・規格・仕入先で検索" value="${esc(state.filters.q)}" autocomplete="off">
     ${filterChips()}
     <div class="list" id="list"></div>
-    <p class="muted small">発注点（これ以下になったら発注）は、品目をタップ → 「品目を編集」で設定できます。</p>`;
+    <p class="muted small">発注点（これ以下になったら発注）と使用間隔の目安は、品目をタップ → 「品目を編集」で設定できます。</p>`;
+  view.querySelectorAll('[data-ack]').forEach((b) => b.onclick = () => {
+    try { updateItems((list) => { const t = list.find((i) => i.id === b.dataset.ack); t.alertMutedUntil = Date.now() + 7 * DAY; t.updatedAt = Date.now(); }); } catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
+    toast('確認しました（1週間非表示）'); renderStock(); updateHeader();
+  });
   const list = $('#list');
   const draw = () => {
     const s = computeStock().stock;
@@ -291,7 +461,7 @@ function openItemSheet(it) {
       <button class="btn sm secondary" data-act="edit">品目を編集</button>
     </div>
     <h3>この品目の履歴</h3>
-    ${hist.length ? hist.map((e) => `<div class="log ${voided.has(e.id) ? 'void' : ''}"><div class="when">${fmtDT(e.ts)}</div><div class="what"><span class="d ${typeClass(e.type)}">${TYPE_LABEL[e.type] || ''} ${e.qty}</span> ${esc(e.user)} <span class="muted small">${esc(e.note || '')}</span></div></div>`).join('') : '<div class="muted small">まだ記録がありません</div>'}
+    ${hist.length ? hist.map((e) => `<div class="log ${voided.has(e.id) ? 'void' : ''}"><div class="when">${fmtDT(e.ts)}</div><div class="what"><span class="d ${typeClass(e.type)}">${TYPE_LABEL[e.type] || ''} ${e.qty}</span> ${esc(evWho(e))} <span class="muted small">${esc(e.note || '')}</span></div></div>`).join('') : '<div class="muted small">まだ記録がありません</div>'}
     <button class="btn secondary" id="close" style="margin-top:12px">閉じる</button>`);
   $('#close', body).onclick = closeSheet;
   body.querySelectorAll('[data-act]').forEach((b) => b.onclick = () => {
@@ -302,15 +472,15 @@ function openItemSheet(it) {
   });
 }
 function openSetSheet(it, cur) {
-  if (!state.cfg.user) { openUserSheet(() => openSetSheet(it, cur)); return; }
   const pending = state.cfg.dropbox.refreshToken && state.sync.status !== 'ok';
   const body = openSheet(`
     <h2>棚卸：${esc(it.name)}</h2>
     <p class="muted small">実際に数えた在庫数を入れてください。記録上の在庫（${cur}）がこの数に置き換わります。</p>
     ${pending ? '<p class="small" style="color:var(--warn)">※ 他の端末の記録がまだ届いていない可能性があります（右上の⟳で同期してから棚卸すると正確です）</p>' : ''}
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="0" step="1" value="${cur}" aria-label="在庫数"><button id="plus" aria-label="1増やす">＋</button></div>
+    <div class="field"><label for="who">数えた人（任意）</label><input id="who" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
     <div class="field"><label for="note">メモ</label><input id="note" type="text" placeholder="例：月末棚卸" maxlength="200"></div>
-    <button class="btn" id="go">この数で確定（${esc(state.cfg.user)}）</button>
+    <button class="btn" id="go">この数で確定</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
   const qty = $('#qty', body);
   $('#minus', body).onclick = () => { qty.value = String(Math.max(0, (+qty.value || 0) - 1)); };
@@ -318,14 +488,14 @@ function openSetSheet(it, cur) {
   $('#cancel', body).onclick = closeSheet;
   $('#go', body).onclick = () => {
     let n; try { n = readQty(qty.value, 'set'); } catch (e) { toast(e.message); qty.focus(); return; }
-    try { addEvent({ type: 'set', itemId: it.id, qty: n, note: $('#note', body).value.trim() }); }
+    try { addEvent({ type: 'set', itemId: it.id, qty: n, user: $('#who', body).value.trim(), note: $('#note', body).value.trim() }); }
     catch (e) { console.error(e); toast(SAVE_FAIL_MSG, 6000); return; }
     closeSheet(); toast(`${it.name} の在庫を ${n} にしました`); render();
   };
 }
 function openEditSheet(it) {
   const isNew = !it;
-  it = it || { id: 'i' + uid(), name: '', spec: '', unit: '個', category: '薬品', location: '事務所前', supplier: '', note: '', min: 0, active: true };
+  it = it || { id: 'i' + uid(), name: '', spec: '', unit: '個', category: '薬品', location: '事務所前', supplier: '', note: '', min: 0, useDays: 0, alertMutedUntil: 0, active: true };
   const opt = (arr, v) => arr.map((x) => `<option ${x === v ? 'selected' : ''}>${esc(x)}</option>`).join('');
   const body = openSheet(`
     <h2>${isNew ? '品目を追加' : '品目を編集'}</h2>
@@ -339,26 +509,27 @@ function openEditSheet(it) {
       <div class="field grow"><label for="f-cat">種別</label><select id="f-cat">${opt(CATEGORIES, it.category)}</select></div>
       <div class="field grow"><label for="f-loc">置き場</label><select id="f-loc">${opt(LOCATIONS, it.location)}</select></div>
     </div>
-    <div class="field"><label for="f-sup">仕入先</label><input id="f-sup" value="${esc(it.supplier)}" list="sups" placeholder="アスコ・小田島・アグロ・大竹先生" maxlength="100"><datalist id="sups">${[...new Set(state.items.map((i) => i.supplier).filter(Boolean))].map((s) => `<option value="${esc(s)}">`).join('')}</datalist></div>
+    <div class="field"><label for="f-sup">仕入先</label><input id="f-sup" value="${esc(it.supplier)}" list="sups" placeholder="アスコ・小田島・アグロ・大竹先生・食創" maxlength="100"><datalist id="sups">${[...new Set(state.items.map((i) => i.supplier).filter(Boolean))].map((s) => `<option value="${esc(s)}">`).join('')}</datalist></div>
+    <div class="field"><label for="f-use">使用間隔の目安（日）：この日数を超えて持ち出しが無いとアラート（0=なし）</label><input id="f-use" type="number" inputmode="numeric" min="0" step="1" value="${it.useDays || 0}"></div>
     <div class="field"><label for="f-note">備考</label><input id="f-note" value="${esc(it.note || '')}" placeholder="例：土日納品不可" maxlength="500"></div>
-    ${isNew ? '' : `<div class="field"><label><input type="checkbox" id="f-active" ${it.active !== false ? 'checked' : ''}> 使用中（外すと一覧から隠れます）</label></div>`}
+    ${isNew ? '' : `<div class="field"><label><input type="checkbox" id="f-active" ${it.active !== false ? 'checked' : ''}> 在庫管理する（外すと一覧から隠れます）</label></div>`}
     <button class="btn" id="save">保存</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
   $('#cancel', body).onclick = closeSheet;
   $('#save', body).onclick = () => {
     const name = $('#f-name', body).value.trim(); if (!name) { toast('品名を入れてください'); return; }
-    let min; try { min = readQty($('#f-min', body).value || '0', 'set'); } catch (e) { toast('発注点は0以上の整数で入力してください'); return; }
+    let min, useDays;
+    try { min = readQty($('#f-min', body).value || '0', 'set'); useDays = readQty($('#f-use', body).value || '0', 'set'); } catch (e) { toast('発注点・使用間隔は0以上の整数で入力してください'); return; }
     const next = Object.assign({}, it, {
       name, spec: $('#f-spec', body).value.trim(), unit: $('#f-unit', body).value.trim() || '個',
-      min, category: $('#f-cat', body).value, location: $('#f-loc', body).value,
+      min, useDays, category: $('#f-cat', body).value, location: $('#f-loc', body).value,
       supplier: $('#f-sup', body).value.trim(), note: $('#f-note', body).value.trim(),
       active: isNew ? true : $('#f-active', body).checked, updatedAt: Date.now(),
     });
     try { validateItems([next]); } catch (e) { toast(e.message, 4000); return; }
-    const prevItems = state.items;
-    state.items = isNew ? state.items.concat([next]) : state.items.map((x) => (x.id === next.id ? next : x));
-    try { persistItems(); } catch (e) { state.items = prevItems; toast(SAVE_FAIL_MSG, 6000); return; }
-    scheduleSync(); closeSheet(); toast('保存しました'); render();
+    try { updateItems((list) => { const i = list.findIndex((x) => x.id === next.id); if (i < 0) list.push(next); else list[i] = next; }); }
+    catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
+    closeSheet(); toast('保存しました'); render();
   };
 }
 
@@ -383,14 +554,13 @@ function renderLog() {
     const day = fmtDate(e.ts);
     if (day !== lastDay) { html += `<h3>${day}</h3>`; lastDay = day; }
     html += `<div class="log ${voided.has(e.id) ? 'void' : ''}">
-      <div class="when">${fmtTime(e.ts)}<br>${esc(e.user || '?')}</div>
+      <div class="when">${fmtTime(e.ts)}<br>${esc(evWho(e))}</div>
       <div class="what"><span class="d ${typeClass(e.type)}">${TYPE_LABEL[e.type] || ''} ${e.qty}${esc(evUnit(e))}</span> ${esc(evName(e))}
         <div class="muted small">${esc((e.itemId && itemById(e.itemId) || {}).location || '')} ${esc(e.note || '')}</div></div>
       ${voided.has(e.id) ? '' : `<button data-void="${esc(e.id)}">取消</button>`}</div>`;
   }
   $('#list').innerHTML = html || '<div class="empty">まだ記録がありません</div>';
   view.querySelectorAll('[data-void]').forEach((b) => b.onclick = () => {
-    if (!state.cfg.user) { openUserSheet(() => { }); return; }
     if (!confirm('この記録を取り消しますか？（取消の記録が残ります）')) return;
     try { addEvent({ type: 'void', ref: b.dataset.void, itemId: null, qty: 0 }); } catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
     renderLog(); toast('取り消しました');
@@ -398,11 +568,11 @@ function renderLog() {
 }
 function exportCSV() {
   const { voided } = computeStock();
-  const rows = [['日時', '種類', '品名', '規格', '数量', '単位', '置き場', '担当', 'メモ', '取消']];
+  const rows = [['日時', '種類', '品名', '規格', '数量', '単位', '置き場', '持ち出し先', '担当', 'メモ', '取消']];
   for (const e of C.orderEvents(state.events.filter((e) => e.type !== 'void'))) {
     const it = (e.itemId && itemById(e.itemId)) || {};
     const d = new Date(e.ts);
-    rows.push([`${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${fmtTime(e.ts)}`, { out: '持ち出し', in: '入荷', set: '棚卸' }[e.type], it.name || e.name || '', it.spec || '', e.qty, it.unit || e.unit || '', it.location || '', e.user || '', e.note || '', voided.has(e.id) ? '取消' : '']);
+    rows.push([`${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${fmtTime(e.ts)}`, { out: '持ち出し', in: '入荷', set: '棚卸' }[e.type], it.name || e.name || '', it.spec || '', e.qty, it.unit || e.unit || '', it.location || '', e.stage || '', e.user || '', e.note || '', voided.has(e.id) ? '取消' : '']);
   }
   const csv = '﻿' + rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
   downloadFile(`入出庫履歴_${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv');
@@ -419,24 +589,27 @@ async function downloadFile(name, text, type) {
 async function restoreBackup(file) {
   let d;
   try { d = JSON.parse(await file.text()); } catch (e) { toast('バックアップを読めません（JSONではありません）', 4000); return; }
-  let events, items;
-  try { events = validateEvents(Array.isArray(d.events) ? d.events : []); items = validateItems(Array.isArray(d.items) ? d.items : []); }
-  catch (e) { toast('バックアップの内容が不正です：' + e.message, 6000); return; }
+  let events, items, expected;
+  try {
+    events = validateEvents(Array.isArray(d.events) ? d.events : []); items = validateItems(Array.isArray(d.items) ? d.items : []);
+    expected = validateExpected(Array.isArray(d.expected) ? d.expected : []);
+  } catch (e) { toast('バックアップの内容が不正です：' + e.message, 6000); return; }
   const have = new Set(state.events.map((e) => e.id));
   const newEvents = events.filter((e) => !have.has(e.id));
   const dup = events.length - newEvents.length;
   const foreign = newEvents.filter((e) => e.dev !== deviceId);
-  const m = mergeMaster(state.items, items);
+  const m = mergeById(state.items, items);
   const addedItems = m.items.length - state.items.length;
   const msg = `バックアップを取り込みます。\n\n追加される記録：${newEvents.length}件（うち他端末の記録 ${foreign.length}件）\nすでにある記録：${dup}件（重複は追加しません）\n追加される品目：${addedItems}件\n\n` +
     (foreign.length ? '他端末の記録は「復元ファイル」として Dropbox に送り、全員に共有されます。\n' : '') + '続けますか？';
   if (!confirm(msg)) return;
-  const prev = { events: state.events, items: state.items, recovery: state.recovery };
+  const prev = { events: state.events, items: state.items, recovery: state.recovery, expected: state.expected };
   try {
     const me = mergeEvents(state.events, newEvents);
     state.events = me.events; state.items = m.items; stockCache = null;
+    state.expected = mergeById(state.expected, expected).items;
     if (foreign.length) state.recovery = state.recovery.concat([{ id: uid(), name: `recovery-${deviceId}-${Date.now().toString(36)}.json`, events: foreign, createdAt: Date.now() }]);
-    persistEvents(); persistItems(); writeLS(LS.recovery, state.recovery);
+    persistEvents(); persistItems(); persistExpected(); writeLS(LS.recovery, state.recovery);
     for (const u of (Array.isArray(d.users) ? d.users : [])) if (typeof u === 'string' && u && !state.users.includes(u)) state.users.push(u);
     save(LS.users, state.users);
   } catch (e) { Object.assign(state, prev); stockCache = null; toast(SAVE_FAIL_MSG, 6000); return; }
@@ -455,9 +628,16 @@ function renderSettings() {
     <h2>⚙️ 設定</h2>
 
     <div class="card">
-      <h3 style="margin-top:0">あなたの名前（記録に残ります）</h3>
+      <h3 style="margin-top:0">あなたの名前（任意：入荷・棚卸の記録に残ります）</h3>
+      <p class="small muted" style="margin:0 0 6px">持ち出しは名前ではなく「持ち出し先（交配舎・分娩舎…）」で記録します。「その他」のときだけ名前を入れます。</p>
       <div class="user-grid" id="users">${state.users.map((u) => `<button class="${u === state.cfg.user ? 'active' : ''}" data-u="${esc(u)}">${esc(u)}</button>`).join('')}</div>
-      <div class="row" style="margin-top:8px"><input class="search grow" id="new-user" placeholder="名前を追加" maxlength="50"><button class="btn sm" id="add-user">追加</button></div>
+      <div class="row" style="margin-top:8px"><input class="search grow" id="new-user" placeholder="名前を追加" maxlength="50"><button class="btn sm" id="add-user">追加</button><button class="btn sm secondary" id="clear-user">名前なし</button></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">農場の共有設定</h3>
+      <div class="row"><div class="field grow"><label for="herd">飼養頭数（頭）：アラートの参考値。全員に共有</label><input id="herd" type="number" inputmode="numeric" min="0" step="1" value="${state.settings.herd || 0}"></div><button class="btn sm" id="herd-save" style="margin-top:14px">保存</button></div>
+      <p class="small muted" style="margin:0">入荷待ち：${waitingExpected().length}件（入荷タブに表示）</p>
     </div>
 
     <div class="card">
@@ -500,9 +680,9 @@ function renderSettings() {
     </div>
 
     <div class="card">
-      <h3 style="margin-top:0">品目マスタ（${state.items.filter((i) => i.active !== false).length}品目 使用中）</h3>
+      <h3 style="margin-top:0">品目マスタ（${state.items.filter((i) => i.active !== false).length}品目 管理中／全${state.items.length}品目）</h3>
       <div class="row wrap"><button class="btn sm" id="add-item">品目を追加</button><button class="btn sm secondary" id="reload-default">発注書の初期マスタを追加読込</button></div>
-      <input class="search" id="mq" placeholder="品目を検索して編集" style="margin-top:8px">
+      <input class="search" id="mq" placeholder="品目を検索して編集（管理していない品目も出ます）" style="margin-top:8px">
       <div class="list" id="mlist" style="margin-top:8px"></div>
     </div>
 
@@ -524,6 +704,14 @@ function renderSettings() {
   // 名前
   view.querySelectorAll('#users button').forEach((b) => b.onclick = () => { state.cfg.user = b.dataset.u; persistMeta(); renderSettings(); updateHeader(); });
   $('#add-user').onclick = () => { const v = $('#new-user').value.trim().slice(0, 50); if (!v) return; if (!state.users.includes(v)) state.users.push(v); state.cfg.user = v; persistMeta(); renderSettings(); updateHeader(); };
+  $('#clear-user').onclick = () => { state.cfg.user = ''; persistMeta(); renderSettings(); updateHeader(); };
+  // 共有設定
+  $('#herd-save').onclick = () => {
+    let herd; try { herd = readQty($('#herd').value || '0', 'set'); } catch (e) { toast('飼養頭数は0以上の整数で入力してください'); return; }
+    state.settings = { herd, updatedAt: Date.now() };
+    try { persistSettings(); } catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
+    scheduleSync(); toast('保存しました（全員に共有）');
+  };
   // Dropbox
   const readDbxForm = () => {
     const newBase = ('/' + $('#dbx-path').value.trim().replace(/^\/+|\/+$/g, '')).replace(/\/+$/, '');
@@ -559,20 +747,19 @@ function renderSettings() {
   $('#reload-default').onclick = () => {
     const add = validateItems((window.DEFAULT_ITEMS || []).filter((d) => !itemById(d.id)).map((d) => Object.assign({}, d, { updatedAt: Date.now() })));
     if (!add.length) { toast('追加する品目はありません'); return; }
-    const prev = state.items; state.items = state.items.concat(add);
-    try { persistItems(); } catch (e) { state.items = prev; toast(SAVE_FAIL_MSG, 6000); return; }
-    scheduleSync(); toast(`${add.length}品目を追加しました`); renderSettings();
+    try { updateItems((list) => { for (const a of add) list.push(a); }); } catch (e) { toast(SAVE_FAIL_MSG, 6000); return; }
+    toast(`${add.length}品目を追加しました`); renderSettings();
   };
   const mlist = $('#mlist');
   const drawM = () => {
     const q = $('#mq').value.trim().toLowerCase();
     const items = state.items.filter((i) => !q || (i.name + i.spec + i.supplier).toLowerCase().includes(q)).slice(0, q ? 100 : 30);
-    mlist.innerHTML = items.map((it) => `<button class="item" data-id="${esc(it.id)}" style="${it.active === false ? 'opacity:.5' : ''}"><div class="grow"><div class="nm">${esc(it.name)}${it.active === false ? ' <span class="tag">停止中</span>' : ''}</div><div class="sp">${esc(it.spec)} ${tags(it)} ${it.min ? '発注点' + it.min : ''}</div></div><div class="muted">›</div></button>`).join('') + (!q && state.items.length > 30 ? '<div class="muted small" style="text-align:center">…検索して絞り込んでください</div>' : '');
+    mlist.innerHTML = items.map((it) => `<button class="item" data-id="${esc(it.id)}" style="${it.active === false ? 'opacity:.5' : ''}"><div class="grow"><div class="nm">${esc(it.name)}${it.active === false ? ' <span class="tag">管理外</span>' : ''}</div><div class="sp">${esc(it.spec)} ${tags(it)} ${it.min ? '発注点' + it.min : ''} ${it.useDays ? '目安' + it.useDays + '日' : ''}</div></div><div class="muted">›</div></button>`).join('') + (!q && state.items.length > 30 ? '<div class="muted small" style="text-align:center">…検索して絞り込んでください</div>' : '');
     mlist.querySelectorAll('.item').forEach((b) => b.onclick = () => openEditSheet(itemById(b.dataset.id)));
   };
   $('#mq').oninput = drawM; drawM();
   // データ
-  $('#backup').onclick = () => downloadFile(`在庫アプリ_バックアップ_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ app: 'cm-zaiko', version: APP_VERSION, device: deviceId, basePath: dbx.basePath, createdAt: new Date().toISOString(), items: state.items, events: state.events, users: state.users }, null, 1), 'application/json');
+  $('#backup').onclick = () => downloadFile(`在庫アプリ_バックアップ_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ app: 'cm-zaiko', version: APP_VERSION, device: deviceId, basePath: dbx.basePath, createdAt: new Date().toISOString(), items: state.items, events: state.events, expected: state.expected, settings: state.settings, users: state.users }, null, 1), 'application/json');
   $('#restore').onclick = () => $('#restore-file').click();
   $('#restore-file').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) await restoreBackup(f); };
   $('#wipe').onclick = () => {
@@ -587,12 +774,14 @@ function renderSettings() {
 function openUserSheet(after) {
   const body = openSheet(`
     <h2>あなたの名前を選んでください</h2>
-    <p class="muted small">持ち出し・入荷の記録に「誰が」として残ります（あとで設定から変更できます）</p>
+    <p class="muted small">入荷・棚卸の記録に「誰が」として残ります（あとで設定から変更できます）</p>
     <div class="user-grid" id="ug">${state.users.map((u) => `<button data-u="${esc(u)}">${esc(u)}</button>`).join('')}</div>
-    <div class="row" style="margin-top:10px"><input class="search grow" id="nu" placeholder="リストにない場合は入力" maxlength="50"><button class="btn sm" id="nu-ok">決定</button></div>`);
-  const done = (u) => { state.cfg.user = u; if (!state.users.includes(u)) state.users.push(u); persistMeta(); updateHeader(); closeSheet(); after && after(); };
+    <div class="row" style="margin-top:10px"><input class="search grow" id="nu" placeholder="リストにない場合は入力" maxlength="50"><button class="btn sm" id="nu-ok">決定</button></div>
+    <button class="btn secondary" id="skip" style="margin-top:10px">名前なしで使う</button>`);
+  const done = (u) => { state.cfg.user = u; if (u && !state.users.includes(u)) state.users.push(u); persistMeta(); updateHeader(); closeSheet(); after && after(); };
   body.querySelectorAll('#ug button').forEach((b) => b.onclick = () => done(b.dataset.u));
   $('#nu-ok', body).onclick = () => { const v = $('#nu', body).value.trim().slice(0, 50); if (v) done(v); };
+  $('#skip', body).onclick = () => done('');
 }
 
 // ---------- 画面切替 ----------
@@ -603,21 +792,29 @@ function render() {
 }
 document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.filters.q = ''; state.filters.logLimit = 400; render(); window.scrollTo(0, 0); }));
 
-// ---------- 未送信の判定 ----------
+// ---------- 共有文書（品目マスタ・入荷予定・共有設定）と未送信の判定 ----------
 const basePath = () => state.cfg.dropbox.basePath.replace(/\/+$/, '');
 const ownEvents = () => C.orderEvents(state.events.filter((e) => e.dev === deviceId));
 const ownText = () => JSON.stringify(ownEvents());
-const masterText = () => JSON.stringify(state.items);
+const DOCS = {
+  master: { file: 'master.json', label: '品目マスタ', get: () => state.items, set: (v) => { state.items = v; }, validate: validateItems, merge: mergeById, persist: persistItems },
+  expected: { file: 'expected.json', label: '入荷予定', get: () => state.expected, set: (v) => { state.expected = v; }, validate: (v) => pruneExpected(validateExpected(v), Date.now()), merge: mergeById, persist: persistExpected },
+  settings: { file: 'settings.json', label: '共有設定', get: () => state.settings, set: (v) => { state.settings = v; }, validate: validateSettings,
+    merge: (l, r) => ((r.updatedAt || 0) > (l.updatedAt || 0) ? { items: r, changed: true } : { items: l, changed: false }), persist: persistSettings },
+};
+const docText = (key) => JSON.stringify(DOCS[key].get());
+const docPending = (key) => fingerprint(docText(key)) !== state.sent[key] || state.sent.base !== basePath();
 const eventsPending = () => fingerprint(ownText()) !== state.sent.events || state.sent.base !== basePath();
-const masterPending = () => fingerprint(masterText()) !== state.sent.master || state.sent.base !== basePath();
+const masterPending = () => docPending('master');
 function pendingSummary() {
   if (!state.cfg.dropbox.refreshToken) return { count: 0, text: '（同期未設定）' };
   const parts = [];
   if (eventsPending()) parts.push('記録');
-  if (masterPending()) parts.push('品目マスタ');
+  for (const k of Object.keys(DOCS)) if (docPending(k)) parts.push(DOCS[k].label);
   if (state.recovery.length) parts.push(`復元ファイル${state.recovery.length}`);
   return { count: parts.length, text: parts.length ? parts.join('・') + ' が未送信' : 'なし' };
 }
+const anyPending = () => eventsPending() || Object.keys(DOCS).some(docPending) || state.recovery.length > 0;
 
 function syncLabel() {
   const s = state.sync;
@@ -625,15 +822,19 @@ function syncLabel() {
   return { ok: '同期済み ' + (s.last ? fmtTime(s.last) : ''), busy: '同期中…', pending: '未送信あり', err: 'エラー: ' + s.msg, off: 'オフライン' }[s.status] || s.status;
 }
 function setSync(status, msg = '') { state.sync.status = status; state.sync.msg = msg; if (status === 'ok') state.sync.last = Date.now(); updateHeader(); }
+function setBadge(tab, n) {
+  const b = document.querySelector(`#tabs button[data-tab="${tab}"]`); let badge = b.querySelector('.badge');
+  if (n) { if (!badge) { badge = document.createElement('span'); badge.className = 'badge'; b.appendChild(badge); } badge.textContent = n; } else if (badge) badge.remove();
+}
 function updateHeader() {
-  $('#who').textContent = state.cfg.user || '名前未設定';
+  $('#who').textContent = state.cfg.user || '名前なし';
   $('#sync-label').textContent = syncLabel();
   const dot = $('#sync-dot'); dot.className = 'dot ' + (state.cfg.dropbox.refreshToken ? state.sync.status : 'off');
   $('#sync-btn').classList.toggle('spin', state.sync.busy);
   const { stock } = computeStock();
   const low = state.items.filter((i) => i.active !== false && isLow(i, stock)).length;
-  const sb = document.querySelector('#tabs button[data-tab="stock"]'); let badge = sb.querySelector('.badge');
-  if (low) { if (!badge) { badge = document.createElement('span'); badge.className = 'badge'; sb.appendChild(badge); } badge.textContent = low; } else if (badge) badge.remove();
+  setBadge('stock', low + currentAlerts().length);
+  setBadge('in', waitingExpected().length);
 }
 $('#sync-btn').onclick = () => { if (!state.cfg.dropbox.refreshToken) { state.tab = 'settings'; render(); toast('Dropbox同期を設定すると全員で共有できます'); } else syncNow(true); };
 
@@ -741,6 +942,43 @@ async function dbxList(path) {
 // ---------- 同期 ----------
 let syncTimer, pollTimer;
 function scheduleSync() { if (!state.cfg.dropbox.refreshToken) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(false), 1200); }
+
+/** 共有文書1つの取込→必要なら送信（競合したら取り直して最大3回） */
+async function syncDoc(key, base, metaList, errors) {
+  const doc = DOCS[key];
+  const path = `${base}/${doc.file}`; const k = path.toLowerCase();
+  const meta = metaList.find((f) => f.path_lower === k);
+  let rev = meta ? meta.rev : null;
+  if (meta && state.revs[k] !== meta.rev) {
+    try {
+      const dl = await dbxDownload(path);
+      if (dl) {
+        const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text)));
+        if (r.changed) { doc.set(r.items); doc.persist(); stockCache = null; }
+        state.revs[k] = dl.rev; rev = dl.rev; save(LS.revs, state.revs);
+      }
+    } catch (e) { errors.push(`${doc.file}: ${e.message}`); return; }
+  }
+  if (!meta || docPending(key)) {
+    let uploaded = false;
+    for (let attempt = 0; attempt < 3 && !uploaded; attempt++) {
+      const text = docText(key);
+      try {
+        const up = await dbxUpload(path, text, rev ? { '.tag': 'update', update: rev } : 'add');
+        state.revs[k] = up.rev; state.sent[key] = fingerprint(text); uploaded = true;
+      } catch (e) {
+        if (e.status === 409 && /conflict/.test(e.body)) {
+          const dl = await dbxDownload(path);
+          if (dl) { const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text))); if (r.changed) { doc.set(r.items); doc.persist(); } rev = dl.rev; state.revs[k] = dl.rev; }
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!uploaded) throw new Error(`${doc.label}の送信が競合して失敗しました。しばらくしてから再同期してください`);
+  }
+}
+
 /**
  * 同期の本体。戻り値 true = 取込・送信とも完了（エラーなし）。
  * 「同期済み」は「読込・検証・端末保存・必要な送信が全て完了し、未送信がない」ときだけ。
@@ -766,40 +1004,9 @@ async function syncNow(manual, quiet) {
         state.revs[f.path_lower] = dl.rev; save(LS.revs, state.revs);
       } catch (e) { errors.push(`${f.name}: ${e.message}`); }
     }
-    // 2) 品目マスタ（取込 → 必要なら送信。競合したら取り直して最大3回）
-    const masterPath = base + '/master.json';
-    const mkey = masterPath.toLowerCase();
+    // 2) 共有文書（品目マスタ・入荷予定・共有設定）
     const metaList = await dbxList(base);
-    const mmeta = metaList.find((f) => f.path_lower === mkey);
-    let masterRev = mmeta ? mmeta.rev : null;
-    if (mmeta && state.revs[mkey] !== mmeta.rev) {
-      try {
-        const dl = await dbxDownload(masterPath);
-        if (dl) {
-          const r = mergeMaster(state.items, validateItems(JSON.parse(dl.text)));
-          if (r.changed) { state.items = r.items; persistItems(); }
-          state.revs[mkey] = dl.rev; masterRev = dl.rev; save(LS.revs, state.revs);
-        }
-      } catch (e) { errors.push(`master.json: ${e.message}`); }
-    }
-    if (!mmeta || masterPending()) {
-      let uploaded = false;
-      for (let attempt = 0; attempt < 3 && !uploaded; attempt++) {
-        const text = masterText();
-        try {
-          const up = await dbxUpload(masterPath, text, masterRev ? { '.tag': 'update', update: masterRev } : 'add');
-          state.revs[mkey] = up.rev; state.sent.master = fingerprint(text); uploaded = true;
-        } catch (e) {
-          if (e.status === 409 && /conflict/.test(e.body)) {
-            const dl = await dbxDownload(masterPath);
-            if (dl) { const r = mergeMaster(state.items, validateItems(JSON.parse(dl.text))); if (r.changed) { state.items = r.items; persistItems(); } masterRev = dl.rev; state.revs[mkey] = dl.rev; }
-            continue;
-          }
-          throw e;
-        }
-      }
-      if (!uploaded) throw new Error('品目マスタの送信が競合して失敗しました。しばらくしてから再同期してください');
-    }
+    for (const key of Object.keys(DOCS)) await syncDoc(key, base, metaList, errors);
     // 3) この端末の記録を書く（自分のファイルだけ）。送った内容の指紋を記録し、送信中に増えた分は未送信として残す
     const myPath = `${base}/events/${deviceId}.json`;
     const remoteMine = files.find((f) => f.path_lower === myPath.toLowerCase());
@@ -819,10 +1026,11 @@ async function syncNow(manual, quiet) {
     }
     persistMeta();
     if (errors.length) { setSync('err', errors[0] + (errors.length > 1 ? ` 他${errors.length - 1}件` : '')); }
-    else if (eventsPending() || masterPending()) { setSync('pending'); scheduleSync(); }
+    else if (anyPending()) { setSync('pending'); scheduleSync(); }
     else setSync('ok');
     if (got) { if (!quiet) toast(`他の端末の記録 ${got}件 を取り込みました`); if (state.tab !== 'settings') render(); else updateHeader(); }
     else if (manual && !quiet) toast(errors.length ? '一部のファイルを取り込めませんでした：' + errors[0] : (state.sync.status === 'pending' ? '送信待ちがあります。もう一度同期します' : '最新の状態です'), errors.length ? 6000 : 2200);
+    else if (!manual && state.tab !== 'settings' && !sheetOpen()) render();   // 入荷予定・マスタの変更を画面に反映
     return errors.length === 0 && state.sync.status === 'ok';
   } catch (e) {
     console.error(e); setSync('err', e.message); if (manual && !quiet) toast('同期エラー：' + e.message, 6000);
@@ -850,8 +1058,8 @@ function handleSetupLink() {
     Object.assign(state.cfg.dropbox, { appKey: p.appKey, basePath: basePathNew, refreshToken: p.refreshToken, accessToken: '', expiresAt: 0, account: '' });
     if (Array.isArray(p.users)) for (const u of p.users) if (typeof u === 'string' && u && u.length <= 50 && !state.users.includes(u)) state.users.push(u);
     if (typeof p.liffId === 'string') state.cfg.liffId = p.liffId; if (Number.isInteger(p.pollSec) && p.pollSec >= 10) state.cfg.pollSec = p.pollSec;
-    state.revs = {}; persistMeta(); toast('共有設定を取り込みました。名前を選んでください', 3500);
-    setTimeout(() => { if (!state.cfg.user) openUserSheet(() => syncNow(true)); else syncNow(true); }, 300);
+    state.revs = {}; persistMeta(); toast('共有設定を取り込みました', 3500);
+    setTimeout(() => syncNow(true), 300);
   } catch (e) { toast('招待リンクの読み込みに失敗：' + e.message, 5000); }
 }
 
@@ -876,8 +1084,9 @@ async function initSW() {
     let reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (reloading) return;
-      if (state.updateRequested) { reloading = true; location.reload(); }
-      else showBanner(`<span>アプリが更新されました。画面を読み込み直してください</span><button id="b-reload">再読込</button>`, 'info'), ($('#b-reload').onclick = () => { if (!sheetOpen() || confirm('入力画面が開いています。読み込み直しますか？')) location.reload(); });
+      if (state.updateRequested) { reloading = true; location.reload(); return; }
+      showBanner(`<span>アプリが更新されました。画面を読み込み直してください</span><button id="b-reload">再読込</button>`, 'info');
+      $('#b-reload').onclick = () => { if (!sheetOpen() || confirm('入力画面が開いています。読み込み直しますか？')) location.reload(); };
     });
     setInterval(() => reg.update(), 30 * 60 * 1000);
   } catch (e) { console.warn('SW登録失敗', e); }
@@ -891,10 +1100,9 @@ async function initSW() {
   setupBanners();
   initSW();
   initLiff();
-  if (!state.cfg.user) setTimeout(() => openUserSheet(null), 400);
   if (state.cfg.dropbox.refreshToken) { syncNow(false); startPolling(); }
 })();
 
 // デバッグ・検証用（tools/ の手順とブラウザのコンソールから使う）
-window.ZK = { state, syncNow, computeStock, dbxRPC, dbxList, dbxDownload, dbxUpload, apiArg, net, addEvent, pendingSummary, eventsPending, masterPending, restoreBackup, deviceId, version: APP_VERSION };
+window.ZK = { state, syncNow, computeStock, dbxRPC, dbxList, dbxDownload, dbxUpload, apiArg, net, addEvent, pendingSummary, eventsPending, masterPending, docPending, restoreBackup, deviceId, version: APP_VERSION, currentAlerts, DOCS };
 })();

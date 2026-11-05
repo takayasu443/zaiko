@@ -10,7 +10,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i275956ff",
@@ -58,7 +58,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i3842e1df",
@@ -82,7 +82,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "id0200089",
@@ -130,7 +130,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "if885e6ec",
@@ -142,7 +142,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i9f14fe82",
@@ -154,7 +154,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ic392f6ab",
@@ -166,7 +166,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "if7d844d0",
@@ -190,7 +190,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ia8151e06",
@@ -214,7 +214,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "idf438a2e",
@@ -238,7 +238,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ib8056750",
@@ -274,7 +274,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "if2b9abaf",
@@ -286,7 +286,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ib27359b9",
@@ -313,8 +313,20 @@ window.DEFAULT_ITEMS = [
   "active": true
  },
  {
+  "id": "i_prrs",
+  "name": "インゲルバック PRRS 生ワクチン",
+  "spec": "50D",
+  "unit": "個",
+  "category": "薬品",
+  "location": "冷蔵庫",
+  "supplier": "大竹先生",
+  "note": "",
+  "min": 0,
+  "active": true
+ },
+ {
   "id": "i45aae975",
-  "name": "インゲルパック フレックスコンボミックス",
+  "name": "インゲルパック フレックス",
   "spec": "50ml×2",
   "unit": "箱",
   "category": "薬品",
@@ -358,7 +370,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i42a7e254",
@@ -430,7 +442,19 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
+ },
+ {
+  "id": "i_sk_sanikko",
+  "name": "サニッコ2号",
+  "spec": "",
+  "unit": "袋",
+  "category": "飼料",
+  "location": "コンテナ左",
+  "supplier": "食創",
+  "note": "置き場未確認",
+  "min": 0,
+  "active": false
  },
  {
   "id": "i7b34a290",
@@ -442,7 +466,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "大竹先生",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i17e00297",
@@ -457,6 +481,18 @@ window.DEFAULT_ITEMS = [
   "active": true
  },
  {
+  "id": "i_sk_shippopin",
+  "name": "シッポピン",
+  "spec": "",
+  "unit": "袋",
+  "category": "飼料",
+  "location": "コンテナ左",
+  "supplier": "食創",
+  "note": "置き場未確認",
+  "min": 0,
+  "active": false
+ },
+ {
   "id": "i96e88799",
   "name": "ホスタザイム",
   "spec": "20ｋｇ",
@@ -467,6 +503,42 @@ window.DEFAULT_ITEMS = [
   "note": "",
   "min": 0,
   "active": true
+ },
+ {
+  "id": "i_sk_mira",
+  "name": "母豚ミラE／O",
+  "spec": "",
+  "unit": "袋",
+  "category": "飼料",
+  "location": "コンテナ左",
+  "supplier": "食創",
+  "note": "",
+  "min": 0,
+  "active": true
+ },
+ {
+  "id": "i_sk_osu",
+  "name": "雄豚の友",
+  "spec": "",
+  "unit": "袋",
+  "category": "飼料",
+  "location": "コンテナ左",
+  "supplier": "食創",
+  "note": "置き場未確認",
+  "min": 0,
+  "active": false
+ },
+ {
+  "id": "i_sk_ezuke",
+  "name": "餌付",
+  "spec": "",
+  "unit": "袋",
+  "category": "飼料",
+  "location": "コンテナ左",
+  "supplier": "食創",
+  "note": "置き場未確認",
+  "min": 0,
+  "active": false
  },
  {
   "id": "i6edd28f3",
@@ -505,6 +577,18 @@ window.DEFAULT_ITEMS = [
   "active": true
  },
  {
+  "id": "i_sk_multimilk",
+  "name": "プレミアマルチミルク",
+  "spec": "",
+  "unit": "袋",
+  "category": "飼料",
+  "location": "コンテナ右",
+  "supplier": "食創",
+  "note": "",
+  "min": 0,
+  "active": true
+ },
+ {
   "id": "ia68b32ef",
   "name": "ホワイトリンク",
   "spec": "20㎏",
@@ -538,12 +622,24 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i6c12bb60",
   "name": "20ｍｌ注射器バレル",
   "spec": "",
+  "unit": "個",
+  "category": "器具",
+  "location": "事務所前",
+  "supplier": "小田島",
+  "note": "",
+  "min": 0,
+  "active": false
+ },
+ {
+  "id": "i_hd2013",
+  "name": "HD2013（20G×13mm）",
+  "spec": "20本入",
   "unit": "個",
   "category": "器具",
   "location": "事務所前",
@@ -574,7 +670,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ib8249ab9",
@@ -586,7 +682,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ifd903709",
@@ -598,7 +694,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ie2c5f4f8",
@@ -610,7 +706,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ic6b4d49f",
@@ -622,7 +718,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i6413fd62",
@@ -634,7 +730,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i25670073",
@@ -646,7 +742,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i3b108d9f",
@@ -670,7 +766,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i582c78ba",
@@ -682,7 +778,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i0ba46791",
@@ -694,7 +790,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i68ecd9e0",
@@ -706,7 +802,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i8535f661",
@@ -718,7 +814,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i61da0dc2",
@@ -730,7 +826,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "icb224e2f",
@@ -742,7 +838,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i1efda33b",
@@ -754,7 +850,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i12a34912",
@@ -766,7 +862,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "if429581b",
@@ -778,7 +874,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アグロ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ic1efca1b",
@@ -814,7 +910,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アグロ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i49ff11ae",
@@ -826,7 +922,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アグロ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i569f76a2",
@@ -874,7 +970,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i14b88e54",
@@ -886,7 +982,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "iee3ca566",
@@ -898,7 +994,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "id9b87bfd",
@@ -910,7 +1006,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ic50ca53b",
@@ -922,7 +1018,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i0ca41d0f",
@@ -934,7 +1030,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i53dfd027",
@@ -1030,7 +1126,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i28672337",
@@ -1054,7 +1150,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i2d58041b",
@@ -1066,7 +1162,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ib9247981",
@@ -1078,7 +1174,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アグロ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i_kamitai",
@@ -1090,7 +1186,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i2c348af7",
@@ -1102,7 +1198,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i347482b4",
