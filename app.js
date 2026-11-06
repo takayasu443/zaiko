@@ -14,11 +14,11 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.3.0';
 const C = window.ZKCore;
-const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url } = C;
+const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url, receiptEventId } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉'];
-const LS = { items: 'zk_items', events: 'zk_events', cfg: 'zk_cfg', device: 'zk_device', users: 'zk_users', pkce: 'zk_pkce', revs: 'zk_revs', dismiss: 'zk_dismiss', sent: 'zk_sent', recovery: 'zk_recovery', expected: 'zk_expected', settings: 'zk_settings' };
+const LS = { items: 'zk_items', events: 'zk_events', cfg: 'zk_cfg', device: 'zk_device', users: 'zk_users', pkce: 'zk_pkce', revs: 'zk_revs', dismiss: 'zk_dismiss', sent: 'zk_sent', recovery: 'zk_recovery', expected: 'zk_expected', settings: 'zk_settings', quarantine: 'zk_quarantine' };
 
 // ---------- 保存まわり ----------
 const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
@@ -56,10 +56,33 @@ if (!state.items.length) {
   state.items = validateItems((window.DEFAULT_ITEMS || []).map((it) => Object.assign({}, it, { updatedAt: 0 })));
   save(LS.items, state.items);
 }
-try { state.events = validateEvents(load(LS.events, [])); } catch (e) { console.warn('記録の一部を読めませんでした', e); state.events = (load(LS.events, []) || []).filter((x) => x && x.id); }
+{
+  const raw = load(LS.events, []);
+  try { state.events = validateEvents(raw); }
+  catch (e) {
+    console.warn('記録の一部を読めませんでした。不正な記録だけ隔離します', e);
+    const good = [], bad = [], seen = new Set();
+    for (const x of (Array.isArray(raw) ? raw : [])) {
+      try { validateEvents([x]); if (seen.has(x.id)) throw new Error('ID重複'); seen.add(x.id); good.push(x); }
+      catch (err) { bad.push({ at: Date.now(), why: err.message, item: x }); }
+    }
+    state.events = good;
+    if (bad.length) { try { writeLS(LS.quarantine, load(LS.quarantine, []).concat(bad).slice(-200)); } catch (e2) { } }
+  }
+}
 try { state.expected = pruneExpected(validateExpected(load(LS.expected, [])), Date.now()); } catch (e) { console.warn('入荷予定を読めませんでした', e); state.expected = []; }
 try { state.settings = validateSettings(load(LS.settings, {})); } catch (e) { state.settings = { herd: 0, updatedAt: 0 }; }
 
+/** 複数キーをまとめて保存。途中で失敗したら、書き込めた分を元に戻してから例外 */
+function writeMany(pairs) {
+  const prev = pairs.map(([k]) => [k, localStorage.getItem(k)]);
+  const done = [];
+  try { for (const [k, v] of pairs) { writeLS(k, v); done.push(k); } }
+  catch (e) {
+    for (const [k, old] of prev) if (done.includes(k)) { try { if (old === null) localStorage.removeItem(k); else localStorage.setItem(k, old); } catch (e2) { } }
+    throw e;
+  }
+}
 const persistItems = () => writeLS(LS.items, state.items);
 const persistEvents = () => writeLS(LS.events, state.events);
 const persistExpected = () => writeLS(LS.expected, state.expected);
@@ -88,7 +111,17 @@ function computeStock() {
 }
 const itemById = (id) => state.items.find((i) => i.id === id);
 const isLow = (it, s) => it.min > 0 && (s[it.id] || 0) <= it.min;
-const waitingExpected = () => state.expected.filter((x) => x.status === 'waiting');
+const expectedProgress = () => C.expectedProgress(state.expected, state.events);
+const waitingExpected = () => { const p = expectedProgress(); return state.expected.filter((x) => x.status === 'waiting' && !(p[x.id] && p[x.id].done)); };
+/** 予定の状態を記録に合わせて直す（受取済みなのに waiting、数量が増えて received など）。失敗しても害はない */
+function healExpected() {
+  const p = expectedProgress(); const now = Date.now();
+  const fix = state.expected.filter((x) => (x.status === 'waiting' && p[x.id] && p[x.id].done) || (x.status === 'received' && p[x.id] && !p[x.id].done && x.receivedEventId === ''));
+  if (!fix.length) return;
+  try {
+    updateExpected((list) => { for (const x of fix) { const t = list.find((y) => y.id === x.id); if (!t) continue; if (t.status === 'waiting') { t.status = 'received'; t.receivedAt = now; } else { t.status = 'waiting'; } t.updatedAt = now; } });
+  } catch (e) { console.warn('予定の状態更新に失敗（次回に再試行）', e); }
+}
 const currentAlerts = () => C.computeAlerts(state.items, state.events, Date.now());
 
 /** 記録を1件追加。端末に保存できたときだけ state に反映する。失敗時は例外 */
@@ -97,6 +130,8 @@ function addEvent(ev) {
   ev = Object.assign({ id: uid(), ts: Date.now(), user: state.cfg.user || '', dev: deviceId }, ev, it ? { name: it.name, unit: it.unit } : {});
   validateEvents([ev]);
   reloadEventsFromStorage();
+  const dup = state.events.find((e) => e.id === ev.id);
+  if (dup) return dup;                      // 同じ納品の受取記録は一度だけ
   const next = state.events.concat([ev]);
   writeLS(LS.events, next);               // ← ここで失敗したら例外。state は変えない
   state.events = next; stockCache = null;
@@ -277,6 +312,8 @@ function openQtySheet(it, mode) {
 // ---------- 入荷待ち（発注済み・未着） ----------
 function renderExpectedBox() {
   const box = $('#expected-box'); if (!box) return;
+  healExpected();
+  const prog = expectedProgress();
   const waiting = waitingExpected().sort((a, b) => (b.orderedAt || 0) - (a.orderedAt || 0) || a.supplier.localeCompare(b.supplier));
   const groups = new Map();
   for (const x of waiting) { const k = `${x.supplier || '（仕入先不明）'}|${x.orderedAt ? fmtMD(x.orderedAt) : ''}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
@@ -287,7 +324,8 @@ function renderExpectedBox() {
     html += `<div class="row" style="margin-top:10px"><div class="grow"><b>${esc(sup)}</b> <span class="muted small">${md ? md + ' 発注' : ''}・${list.length}件</span></div><button class="btn sm in" data-exp-all="${esc(k)}">全部入荷</button></div>`;
     for (const x of list) {
       const known = x.itemId && itemById(x.itemId);
-      html += `<div class="log" style="align-items:center"><div class="what"><b>${esc(x.name)}</b> <span class="muted small">${esc(x.spec)}</span>${known ? '' : ' <span class="tag" style="background:#fff3cd;color:#7a5a00">品目未登録</span>'}<div class="muted small">${x.qty}${esc(x.unit)}${x.location ? '・' + esc(x.location) : ''}</div></div>
+      const pr = prog[x.id] || { received: 0, remaining: x.qty };
+      html += `<div class="log" style="align-items:center"><div class="what"><b>${esc(x.name)}</b> <span class="muted small">${esc(x.spec)}</span>${known ? '' : ' <span class="tag" style="background:#fff3cd;color:#7a5a00">品目未登録</span>'}<div class="muted small">残り ${pr.remaining}${esc(x.unit)}${pr.received ? `（発注${x.qty}・受取済み${pr.received}）` : ''}${x.location ? '・' + esc(x.location) : ''}</div></div>
         <button class="btn sm in" data-exp="${esc(x.id)}">入荷した</button><button data-exp-cancel="${esc(x.id)}" aria-label="取消" title="この予定を取消">×</button></div>`;
     }
   }
@@ -319,22 +357,28 @@ function resolveExpectedItem(x) {
   return itemById(created.id);
 }
 function receiveExpected(x, n, who) {
+  reloadEventsFromStorage();
+  const pr = expectedProgress()[x.id] || { received: 0, remaining: x.qty, done: false };
+  if (pr.done) throw Object.assign(new Error('この予定はすでに入荷済みです（他の端末で受け取った可能性があります）'), { already: true });
   const it = resolveExpectedItem(x);
-  const ev = addEvent({ type: 'in', itemId: it.id, qty: n, user: who || state.cfg.user || '', note: `入荷（${x.supplier || '仕入先不明'}）`, expectedId: x.id });
-  updateExpected((list) => {
-    const t = list.find((y) => y.id === x.id); const now = Date.now();
-    if (n < t.qty) { t.qty -= n; t.updatedAt = now; }                       // 一部入荷：残りは待ちのまま
-    else { t.status = 'received'; t.receivedAt = now; t.receivedBy = who || state.cfg.user || ''; t.receivedEventId = ev.id; t.updatedAt = now; }
-  });
+  // 記録IDは「予定ID・受取前の数・今回の数」で決まる → 2端末が同じ納品を受け取っても統合時に1回だけ数えられる
+  const ev = addEvent({ id: receiptEventId(x.id, pr.received, n), type: 'in', itemId: it.id, qty: n, user: who || state.cfg.user || '', note: `入荷（${x.supplier || '仕入先不明'}）`, expectedId: x.id });
+  // 予定側の状態は記録から導けるので、ここでの更新は補助（失敗しても在庫は正しいまま）
+  if (pr.received + n >= x.qty) {
+    try { updateExpected((list) => { const t = list.find((y) => y.id === x.id); if (!t) return; const now = Date.now(); t.status = 'received'; t.receivedAt = now; t.receivedBy = who || state.cfg.user || ''; t.receivedEventId = ev.id; t.updatedAt = now; }); }
+    catch (e) { console.warn('予定の状態更新に失敗（次回同期時に自動修復）', e); }
+  }
   return it;
 }
 function openReceiveSheet(x) {
   if (!x) return;
+  const pr = expectedProgress()[x.id] || { received: 0, remaining: x.qty };
+  const remain = Math.max(1, pr.remaining);
   const body = openSheet(`
     <h2>入荷：${esc(x.name)}</h2>
     <div class="muted small">${esc(x.spec)} ${x.supplier ? '／' + esc(x.supplier) : ''} ${x.orderedAt ? '／' + fmtMD(x.orderedAt) + ' 発注' : ''}</div>
-    <p class="small muted">届いた数を確認して「入荷を登録」。予定より少なければ残りは入荷待ちに残ります。</p>
-    <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="${x.qty}" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
+    <p class="small muted">届いた数を確認して「入荷を登録」。予定より少なければ残りは入荷待ちに残ります。${pr.received ? `（発注 ${x.qty}${esc(x.unit)} のうち ${pr.received} は受取済み）` : ''}</p>
+    <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="${remain}" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
     <div class="field"><label for="who">受け取った人（任意）</label><input id="who" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
     <button class="btn in" id="go">入荷を登録</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
@@ -344,17 +388,17 @@ function openReceiveSheet(x) {
   $('#cancel', body).onclick = closeSheet;
   $('#go', body).onclick = () => {
     let n; try { n = readQty(qty.value, 'in'); } catch (e) { toast(e.message); return; }
-    if (n > x.qty && !confirm(`予定（${x.qty}）より多い数です。このまま登録しますか？`)) return;
-    let it; try { it = receiveExpected(x, n, $('#who', body).value.trim()); } catch (e) { console.error(e); toast(SAVE_FAIL_MSG, 6000); return; }
+    if (n > remain && !confirm(`残りの予定（${remain}）より多い数です。このまま登録しますか？`)) return;
+    let it; try { it = receiveExpected(x, n, $('#who', body).value.trim()); } catch (e) { console.error(e); toast(e.already ? e.message : SAVE_FAIL_MSG, 6000); if (e.already) { closeSheet(); render(); } return; }
     closeSheet(); toast(`入荷 ${it.name} ${n}${it.unit} を登録（在庫 ${computeStock().stock[it.id] || 0}）`); render();
   };
 }
 function receiveAll(list) {
   if (!list.length) return;
   if (!confirm(`${list.length}件を予定どおりの数量で入荷登録します。よろしいですか？\n（数が違う品目があれば、個別に「入荷した」で登録してください）`)) return;
-  let ok = 0;
-  try { for (const x of list) { receiveExpected(x, x.qty, state.cfg.user || ''); ok++; } }
-  catch (e) { console.error(e); toast(`${ok}件登録したところで保存に失敗しました`, 6000); render(); return; }
+  let ok = 0; const prog = expectedProgress();
+  try { for (const x of list) { const rem = prog[x.id] ? prog[x.id].remaining : x.qty; if (rem > 0) { receiveExpected(x, rem, state.cfg.user || ''); ok++; } } }
+  catch (e) { console.error(e); toast(e.already ? e.message : `${ok}件登録したところで保存に失敗しました`, 6000); render(); return; }
   toast(`${ok}件の入荷を登録しました`); render();
 }
 function openExpectedAddSheet() {
@@ -609,7 +653,7 @@ async function restoreBackup(file) {
     state.events = me.events; state.items = m.items; stockCache = null;
     state.expected = mergeById(state.expected, expected).items;
     if (foreign.length) state.recovery = state.recovery.concat([{ id: uid(), name: `recovery-${deviceId}-${Date.now().toString(36)}.json`, events: foreign, createdAt: Date.now() }]);
-    persistEvents(); persistItems(); persistExpected(); writeLS(LS.recovery, state.recovery);
+    writeMany([[LS.events, state.events], [LS.items, state.items], [LS.expected, state.expected], [LS.recovery, state.recovery]]);
     for (const u of (Array.isArray(d.users) ? d.users : [])) if (typeof u === 'string' && u && !state.users.includes(u)) state.users.push(u);
     save(LS.users, state.users);
   } catch (e) { Object.assign(state, prev); stockCache = null; toast(SAVE_FAIL_MSG, 6000); return; }
@@ -808,10 +852,10 @@ const basePath = () => state.cfg.dropbox.basePath.replace(/\/+$/, '');
 const ownEvents = () => C.orderEvents(state.events.filter((e) => e.dev === deviceId));
 const ownText = () => JSON.stringify(ownEvents());
 const DOCS = {
-  master: { file: 'master.json', label: '品目マスタ', get: () => state.items, set: (v) => { state.items = v; }, validate: validateItems, merge: mergeById, persist: persistItems },
-  expected: { file: 'expected.json', label: '入荷予定', get: () => state.expected, set: (v) => { state.expected = v; }, validate: (v) => pruneExpected(validateExpected(v), Date.now()), merge: mergeById, persist: persistExpected },
+  master: { file: 'master.json', label: '品目マスタ', get: () => state.items, set: (v) => { state.items = v; }, validate: validateItems, merge: mergeById, persist: (v) => writeLS(LS.items, v) },
+  expected: { file: 'expected.json', label: '入荷予定', get: () => state.expected, set: (v) => { state.expected = v; }, validate: (v) => pruneExpected(validateExpected(v), Date.now()), merge: mergeById, persist: (v) => writeLS(LS.expected, v) },
   settings: { file: 'settings.json', label: '共有設定', get: () => state.settings, set: (v) => { state.settings = v; }, validate: validateSettings,
-    merge: (l, r) => ((r.updatedAt || 0) > (l.updatedAt || 0) ? { items: r, changed: true } : { items: l, changed: false }), persist: persistSettings },
+    merge: (l, r) => ((r.updatedAt || 0) > (l.updatedAt || 0) ? { items: r, changed: true } : { items: l, changed: false }), persist: (v) => writeLS(LS.settings, v) },
 };
 const docText = (key) => JSON.stringify(DOCS[key].get());
 const docPending = (key) => fingerprint(docText(key)) !== state.sent[key] || state.sent.base !== basePath();
@@ -977,8 +1021,8 @@ async function syncDoc(key, base, metaList, errors) {
       const dl = await dbxDownload(path);
       if (dl) {
         const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text)));
-        if (r.changed) { doc.set(r.items); doc.persist(); stockCache = null; }
-        state.revs[k] = dl.rev; rev = dl.rev; save(LS.revs, state.revs);
+        if (r.changed) { doc.persist(r.items); doc.set(r.items); stockCache = null; }   // 保存できてから反映
+        const nextRevs = Object.assign({}, state.revs, { [k]: dl.rev }); writeLS(LS.revs, nextRevs); state.revs = nextRevs; rev = dl.rev;
       }
     } catch (e) { errors.push(`${doc.file}: ${e.message}`); return; }
   }
@@ -992,7 +1036,7 @@ async function syncDoc(key, base, metaList, errors) {
       } catch (e) {
         if (e.status === 409 && /conflict/.test(e.body)) {
           const dl = await dbxDownload(path);
-          if (dl) { const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text))); if (r.changed) { doc.set(r.items); doc.persist(); } rev = dl.rev; state.revs[k] = dl.rev; }
+          if (dl) { const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text))); if (r.changed) { doc.persist(r.items); doc.set(r.items); } rev = dl.rev; state.revs[k] = dl.rev; }
           continue;
         }
         throw e;
@@ -1023,8 +1067,8 @@ async function syncNow(manual, quiet) {
         const dl = await dbxDownload(f.path_lower); if (!dl) continue;
         const arr = validateEvents(JSON.parse(dl.text));
         const m = mergeEvents(state.events, arr);
-        if (m.added) { state.events = m.events; stockCache = null; persistEvents(); got += m.added; }
-        state.revs[f.path_lower] = dl.rev; save(LS.revs, state.revs);
+        if (m.added) { writeLS(LS.events, m.events); state.events = m.events; stockCache = null; got += m.added; }   // 保存できてから反映
+        const nextRevs = Object.assign({}, state.revs, { [f.path_lower]: dl.rev }); writeLS(LS.revs, nextRevs); state.revs = nextRevs;
       } catch (e) { errors.push(`${f.name}: ${e.message}`); }
     }
     // 2) 共有文書（品目マスタ・入荷予定・共有設定）
@@ -1048,6 +1092,7 @@ async function syncNow(manual, quiet) {
       writeLS(LS.recovery, state.recovery);
     }
     persistMeta();
+    healExpected();
     if (errors.length) { setSync('err', errors[0] + (errors.length > 1 ? ` 他${errors.length - 1}件` : '')); }
     else if (anyPending()) { setSync('pending'); scheduleSync(); }
     else setSync('ok');
@@ -1127,5 +1172,5 @@ async function initSW() {
 })();
 
 // デバッグ・検証用（tools/ の手順とブラウザのコンソールから使う）
-window.ZK = { state, syncNow, computeStock, dbxRPC, dbxList, dbxDownload, dbxUpload, apiArg, net, addEvent, pendingSummary, eventsPending, masterPending, docPending, restoreBackup, deviceId, version: APP_VERSION, currentAlerts, DOCS };
+window.ZK = { state, syncNow, computeStock, dbxRPC, dbxList, dbxDownload, dbxUpload, apiArg, net, addEvent, pendingSummary, eventsPending, masterPending, docPending, restoreBackup, deviceId, version: APP_VERSION, currentAlerts, DOCS, expectedProgress, waitingExpected, receiveExpected, healExpected };
 })();

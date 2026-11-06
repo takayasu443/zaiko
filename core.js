@@ -124,6 +124,21 @@
     return { herd: intOr(bad, v.herd, 0, '飼養頭数'), updatedAt: intOr(bad, v.updatedAt, 0, '更新日時') };
   }
 
+  /**
+   * 入荷予定の進捗。qty は「発注数量」、受取済み数は入荷記録（expectedId 付き・取消除く）の合計から求める。
+   * 予定側の status 更新に失敗したり2端末が同時に受け取っても、残数と在庫は記録から一意に決まる。
+   */
+  function expectedProgress(expected, events) {
+    const { voided } = computeStock(events);
+    const received = {};
+    for (const e of events) if (e.type === 'in' && e.expectedId && !voided.has(e.id)) received[e.expectedId] = (received[e.expectedId] || 0) + e.qty;
+    const out = {};
+    for (const x of expected) { const r = received[x.id] || 0; out[x.id] = { received: r, remaining: Math.max(0, x.qty - r), done: r >= x.qty }; }
+    return out;
+  }
+  /** 受取記録のID。同じ納品（同じ予定・同じ受取前数・同じ数量）なら端末が違っても同じIDになり、統合時に一度だけ数えられる */
+  const receiptEventId = (expectedId, receivedBefore, qty) => `rx_${expectedId}_${receivedBefore}_${qty}`;
+
   /** 入荷済み・取消済みの古い予定は60日で落とす（全端末で同じ規則なので再出現しない） */
   function pruneExpected(list, now) {
     return list.filter((x) => x.status === 'waiting' || now - (x.updatedAt || 0) < 60 * DAY);
@@ -230,5 +245,5 @@
     return t;
   }
 
-  return { CATEGORIES, LOCATIONS, EVENT_TYPES, STAGES, EXPECTED_STATUS, ID_RE, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, orderEvents, computeStock, mergeEvents, mergeById, mergeMaster, computeAlerts, apiArg, b64url, unb64url, buildOrderText };
+  return { CATEGORIES, LOCATIONS, EVENT_TYPES, STAGES, EXPECTED_STATUS, ID_RE, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, orderEvents, computeStock, mergeEvents, mergeById, mergeMaster, computeAlerts, expectedProgress, receiptEventId, apiArg, b64url, unb64url, buildOrderText };
 });
