@@ -1,4 +1,4 @@
-/* CM農場 在庫アプリ（入出庫）  v1.3.1
+/* CM農場 在庫アプリ（入出庫）  v1.3.2
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
@@ -19,7 +19,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.3.2';
 const C = window.ZKCore;
 const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url, receiptEventId } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉', '古内'];
@@ -1265,6 +1265,7 @@ async function initLiff() {
 async function initSW() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   try {
+    const hadController = !!navigator.serviceWorker.controller;      // 以前の版がこの画面を制御していたか（初回インストールと更新を区別する）
     const reg = await navigator.serviceWorker.register('sw.js');
     const track = (w) => { if (!w) return; w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) { state.swWaiting = w; setupBanners(); } }); };
     if (reg.waiting && navigator.serviceWorker.controller) { state.swWaiting = reg.waiting; setupBanners(); }
@@ -1273,6 +1274,7 @@ async function initSW() {
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (reloading) return;
       if (state.updateRequested) { reloading = true; location.reload(); return; }
+      if (!hadController) return;                                  // 初めて開いたときのオフライン準備。更新ではないので案内しない
       showBanner(`<span>アプリが更新されました。画面を読み込み直してください</span><button id="b-reload">再読込</button>`, 'info');
       $('#b-reload').onclick = () => { if (!sheetOpen() || confirm('入力画面が開いています。読み込み直しますか？')) location.reload(); };
     });
