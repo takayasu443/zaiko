@@ -1,4 +1,4 @@
-/* CM農場 在庫アプリ（入出庫）  v1.3.2
+/* CM農場 在庫アプリ（入出庫）  v1.3.3
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
@@ -19,7 +19,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.2';
+const APP_VERSION = '1.3.3';
 const C = window.ZKCore;
 const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url, receiptEventId } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉', '古内'];

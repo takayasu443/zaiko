@@ -1,4 +1,4 @@
-# CM農場 在庫アプリ（入出庫） v1.3.1
+# CM農場 在庫アプリ（入出庫） v1.3.2
 
 > **現在の稼働状況（2026-11-03 設定済み）**
 > - 公開URL：**https://takayasu443.github.io/zaiko/**（GitHub Pages、GitHubアカウント takayasu443）

@@ -2,8 +2,9 @@
  * - install で skipWaiting しない（入力中に勝手に切り替わらない）
  * - キャッシュの削除は 'zaiko-' で始まるものだけ（同じオリジンの別アプリを消さない）
  * - 正常応答(res.ok)だけをキャッシュし、HTMLの代替は画面遷移（navigate）のときだけ返す
+ * - アプリのファイルは毎回サーバーに確認して取る（ブラウザの一時キャッシュで新旧が混ざらないように）
  */
-const VERSION = 'v1.3.2';
+const VERSION = 'v1.3.3';
 const PREFIX = 'zaiko-';
 const CACHE = PREFIX + VERSION;
 const SHELL = [
@@ -12,7 +13,8 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+  // ブラウザの一時キャッシュを使わずに取り直す（古い app.js と新しい core.js が混ざらないように）
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', (event) => {
@@ -32,7 +34,8 @@ self.addEventListener('fetch', (event) => {
   if (!url.pathname.startsWith(scope)) return;                 // このアプリの公開資産だけを扱う
   event.respondWith((async () => {
     try {
-      const res = await fetch(req);
+      // 毎回サーバーに確認して取る（変わっていなければ 304 で軽い）。「更新」直後に古いファイルが読まれるのを防ぐ
+      const res = await fetch(url.origin + url.pathname + url.search, { cache: 'no-cache' });
       if (res.ok) {
         const copy = res.clone();
         event.waitUntil(caches.open(CACHE).then((c) => c.put(req, copy)));
