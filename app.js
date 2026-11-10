@@ -1,9 +1,14 @@
-/* CM農場 在庫アプリ（入出庫）  v1.2.2
+/* CM農場 在庫アプリ（入出庫）  v1.3.1
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
  * - 共通ロジックは core.js（検証・在庫計算・統合・アラート）。この file は画面と保存・同期の制御。
  *
+ * v1.3.1（2026-11-10 全員配布前の最終点検）
+ *   ・iPhone のホーム画面アプリは Safari と保存領域が別。接続設定を起動URLで引き継ぐ／招待リンクの貼り付けでも接続できる
+ *   ・未接続のときはバナーで知らせる。自動同期は入力中の画面を描き直さない
+ *   ・受取を取り消してやり直しても同じ記録IDにならない。入荷にも「受け取った人」
+ * v1.3.0（2026-11-06 再レビュー対応）入荷待ちの残数は記録から導出、保存してから反映、復元の一括保存 など
  * v1.2.0（2026-11-05 専務の要望を反映）
  *   ・持ち出しは「名前」ではなく「持ち出し先（交配舎・分娩舎・離乳舎・肥育舎・洗浄チーム・水小屋・その他）」で記録。その他のときだけ名前
  *   ・入荷待ち（発注済み・未着）を共有し、届いたら「入荷した」ボタン1つで入荷記録。PCの発注書から tools/zaiko_sync.py で登録
@@ -14,10 +19,10 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const C = window.ZKCore;
 const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url, receiptEventId } = C;
-const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉'];
+const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉', '古内'];
 const LS = { items: 'zk_items', events: 'zk_events', cfg: 'zk_cfg', device: 'zk_device', users: 'zk_users', pkce: 'zk_pkce', revs: 'zk_revs', dismiss: 'zk_dismiss', sent: 'zk_sent', recovery: 'zk_recovery', expected: 'zk_expected', settings: 'zk_settings', quarantine: 'zk_quarantine' };
 
 // ---------- 保存まわり ----------
@@ -31,6 +36,13 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const catClass = (c) => (CATEGORIES.includes(c) ? c : '');
 const typeClass = (t) => (['in', 'out', 'set'].includes(t) ? t : '');
 const TYPE_LABEL = { out: '持出', in: '入荷', set: '棚卸' };
+
+// ---------- 端末の種類（iPhone のホーム画面アプリは Safari と保存領域が別なので扱いを分ける） ----------
+const DBG = load('zk_debug', null) || {};      // 検証用の上書き { ios: true, standalone: true }
+const UA = navigator.userAgent;
+const IS_IOS = DBG.ios != null ? !!DBG.ios : (/iPhone|iPad|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+const IS_STANDALONE = DBG.standalone != null ? !!DBG.standalone : (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true);
+const IS_LINE = /\bLine\//i.test(UA);
 
 let deviceId = load(LS.device, null);
 if (!deviceId || !C.ID_RE.test(deviceId)) { deviceId = 'd' + uid(); save(LS.device, deviceId); }
@@ -87,7 +99,7 @@ const persistItems = () => writeLS(LS.items, state.items);
 const persistEvents = () => writeLS(LS.events, state.events);
 const persistExpected = () => writeLS(LS.expected, state.expected);
 const persistSettings = () => writeLS(LS.settings, state.settings);
-const persistMeta = () => { save(LS.cfg, state.cfg); save(LS.users, state.users); save(LS.revs, state.revs); save(LS.sent, state.sent); save(LS.recovery, state.recovery); };
+const persistMeta = () => { save(LS.cfg, state.cfg); save(LS.users, state.users); save(LS.revs, state.revs); save(LS.sent, state.sent); save(LS.recovery, state.recovery); try { syncAddressBar(); } catch (e) { } };
 
 /** 別タブなどが先に保存した記録を取り込んでから書く（上書き事故の防止） */
 function reloadEventsFromStorage() {
@@ -115,11 +127,18 @@ const expectedProgress = () => C.expectedProgress(state.expected, state.events);
 const waitingExpected = () => { const p = expectedProgress(); return state.expected.filter((x) => x.status === 'waiting' && !(p[x.id] && p[x.id].done)); };
 /** 予定の状態を記録に合わせて直す（受取済みなのに waiting、数量が増えて received など）。失敗しても害はない */
 function healExpected() {
-  const p = expectedProgress(); const now = Date.now();
-  const fix = state.expected.filter((x) => (x.status === 'waiting' && p[x.id] && p[x.id].done) || (x.status === 'received' && p[x.id] && !p[x.id].done && x.receivedEventId === ''));
+  const p = expectedProgress(); const now = Date.now(); const { voided } = computeStock();
+  const fix = state.expected.filter((x) => {
+    const pr = p[x.id]; if (!pr) return false;
+    if (x.status === 'waiting') return pr.done;                                   // 受取済みなのに待ちのまま
+    // 入荷済みなのに数が足りない：PCで数量を増やした（受取記録IDが空）か、その受取記録が取り消された場合だけ待ちに戻す
+    // （他の端末の受取記録がまだ届いていないだけ、という場合に戻してしまわないため）
+    if (x.status === 'received' && !pr.done) return x.receivedEventId === '' || voided.has(x.receivedEventId);
+    return false;
+  });
   if (!fix.length) return;
   try {
-    updateExpected((list) => { for (const x of fix) { const t = list.find((y) => y.id === x.id); if (!t) continue; if (t.status === 'waiting') { t.status = 'received'; t.receivedAt = now; } else { t.status = 'waiting'; } t.updatedAt = now; } });
+    updateExpected((list) => { for (const x of fix) { const t = list.find((y) => y.id === x.id); if (!t) continue; if (t.status === 'waiting') { t.status = 'received'; t.receivedAt = now; } else { t.status = 'waiting'; t.receivedEventId = ''; } t.updatedAt = now; } });
   } catch (e) { console.warn('予定の状態更新に失敗（次回に再試行）', e); }
 }
 const currentAlerts = () => C.computeAlerts(state.items, state.events, Date.now());
@@ -139,6 +158,14 @@ function addEvent(ev) {
   return ev;
 }
 const SAVE_FAIL_MSG = '端末に保存できませんでした（空き容量を確認してください）。入力はそのまま残しています';
+/** 入力された名前を覚える（名前リストに追加。この端末の名前が未設定ならそれにする） */
+function rememberUser(name) {
+  name = String(name || '').trim().slice(0, 50); if (!name) return;
+  let changed = false;
+  if (!state.users.includes(name)) { state.users.push(name); changed = true; }
+  if (!state.cfg.user) { state.cfg.user = name; changed = true; }
+  if (changed) { persistMeta(); updateHeader(); }
+}
 
 /** 品目マスタを更新して保存（失敗時は元に戻して例外） */
 function updateItems(mutate) {
@@ -164,6 +191,7 @@ function updateExpected(mutate) {
 const $ = (sel, el = document) => el.querySelector(sel);
 const view = $('#view');
 let toastTimer;
+let viewStale = false;          // 入力中などで描き直しを見送ったとき true
 function toast(msg, ms = 2200) {
   const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
@@ -175,7 +203,11 @@ function openSheet(html) {
   const h = $('.sheet-body h2', s); if (h) { h.id = 'sheet-title'; s.setAttribute('aria-labelledby', 'sheet-title'); }
   return $('.sheet-body', s);
 }
-function closeSheet() { $('#sheet').classList.add('hidden'); if (lastFocus && lastFocus.focus) { try { lastFocus.focus(); } catch (e) { } } }
+function closeSheet() {
+  $('#sheet').classList.add('hidden');
+  if (lastFocus && lastFocus.focus && !/^(INPUT|TEXTAREA)$/.test(lastFocus.tagName)) { try { lastFocus.focus(); } catch (e) { } }
+  if (viewStale) setTimeout(() => { if (viewStale && !sheetOpen()) refreshView(); }, 0);   // 入力中に届いた変更を、閉じたあとで反映
+}
 const sheetOpen = () => !$('#sheet').classList.contains('hidden');
 $('.sheet-bg').addEventListener('click', closeSheet);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheetOpen()) closeSheet(); });
@@ -261,17 +293,20 @@ function openQtySheet(it, mode) {
   if (!it) return;
   const isOut = mode === 'out'; const { stock } = computeStock(); const cur = stock[it.id] || 0;
   const stageSel = { v: state.cfg.lastStage || '' };
+  const hasExpected = !isOut && waitingExpected().some((x) => x.itemId === it.id);
   const body = openSheet(`
     <h2>${esc(it.name)}</h2>
     <div class="muted small">${esc(it.spec || '')} ${tags(it)}</div>
     <div class="row" style="margin-top:8px"><div class="grow">現在の在庫</div><div style="font-size:20px;font-weight:700">${cur} ${esc(it.unit)}</div></div>
+    ${hasExpected ? '<p class="small" style="color:var(--warn);margin:6px 0 0">※ この品目は「入荷待ち」に予定があります。発注した分が届いたときは、入荷タブの上にある「入荷した」から登録してください（予定が消えます）。</p>' : ''}
     ${isOut ? `<div class="field"><label>持ち出し先（どこで使う）</label>
       <div class="user-grid" id="stages">${STAGES.map((s) => `<button type="button" class="${s === stageSel.v ? 'active' : ''}" data-s="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>
       <div class="field ${stageSel.v === 'その他' ? '' : 'hidden'}" id="other-wrap"><label for="other-name">名前（その他のときは必ず）</label><input id="other-name" list="names" value="${esc(state.cfg.user)}" maxlength="50" placeholder="例：千葉"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>` : ''}
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
     <div class="quick">${[1, 2, 5, 10].map((n) => `<button data-q="${n}">${n}</button>`).join('')}</div>
+    ${isOut ? '' : `<div class="field"><label for="by-name">受け取った人（任意）</label><input id="by-name" list="names" value="${esc(state.cfg.user)}" maxlength="50" placeholder="例：古内"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>`}
     <div class="field"><label for="note">メモ（任意）</label><input id="note" type="text" placeholder="${isOut ? '例：豚房番号、用途' : '例：伝票番号'}" maxlength="200"></div>
-    <button class="btn ${isOut ? 'out' : 'in'}" id="go">${isOut ? '持ち出しを登録' : '入荷を登録'}${!isOut && state.cfg.user ? '（' + esc(state.cfg.user) + '）' : ''}</button>
+    <button class="btn ${isOut ? 'out' : 'in'}" id="go">${isOut ? '持ち出しを登録' : '入荷を登録'}</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
   const qty = $('#qty', body);
   const setQ = (n) => { qty.value = String(Math.max(1, Math.round(n) || 1)); };
@@ -294,12 +329,15 @@ function openQtySheet(it, mode) {
       if (stageSel.v === 'その他') {
         const nm = $('#other-name', body).value.trim();
         if (!nm) { toast('「その他」のときは名前を入れてください'); $('#other-name', body).focus(); return; }
-        ev.user = nm; if (!state.users.includes(nm)) { state.users.push(nm); save(LS.users, state.users); }
+        ev.user = nm;
       }
       if (cur - n < 0 && !confirm(`在庫(${cur})より多い数です。このまま登録しますか？\n（在庫数が合っていない場合は、あとで「在庫」→ 棚卸 で直せます）`)) return;
+    } else {
+      ev.user = $('#by-name', body).value.trim();
     }
     try { addEvent(ev); }
     catch (e) { console.error(e); toast(SAVE_FAIL_MSG, 6000); return; }     // 画面は閉じない
+    if (!isOut || ev.stage === 'その他') rememberUser(ev.user);
     if (isOut && state.cfg.lastStage !== stageSel.v) { state.cfg.lastStage = stageSel.v; save(LS.cfg, state.cfg); }
     closeSheet();
     const after = computeStock().stock[it.id] || 0;
@@ -362,7 +400,9 @@ function receiveExpected(x, n, who) {
   if (pr.done) throw Object.assign(new Error('この予定はすでに入荷済みです（他の端末で受け取った可能性があります）'), { already: true });
   const it = resolveExpectedItem(x);
   // 記録IDは「予定ID・受取前の数・今回の数」で決まる → 2端末が同じ納品を受け取っても統合時に1回だけ数えられる
-  const ev = addEvent({ id: receiptEventId(x.id, pr.received, n), type: 'in', itemId: it.id, qty: n, user: who || state.cfg.user || '', note: `入荷（${x.supplier || '仕入先不明'}）`, expectedId: x.id });
+  const { voided } = computeStock();
+  const redo = state.events.filter((e) => e.expectedId === x.id && voided.has(e.id)).length;   // 取消してやり直した回数（取消済みの記録と同じIDにしない）
+  const ev = addEvent({ id: receiptEventId(x.id, pr.received, n) + (redo ? '_r' + redo : ''), type: 'in', itemId: it.id, qty: n, user: who || state.cfg.user || '', note: `入荷（${x.supplier || '仕入先不明'}）`, expectedId: x.id });
   // 予定側の状態は記録から導けるので、ここでの更新は補助（失敗しても在庫は正しいまま）
   if (pr.received + n >= x.qty) {
     try { updateExpected((list) => { const t = list.find((y) => y.id === x.id); if (!t) return; const now = Date.now(); t.status = 'received'; t.receivedAt = now; t.receivedBy = who || state.cfg.user || ''; t.receivedEventId = ev.id; t.updatedAt = now; }); }
@@ -379,7 +419,7 @@ function openReceiveSheet(x) {
     <div class="muted small">${esc(x.spec)} ${x.supplier ? '／' + esc(x.supplier) : ''} ${x.orderedAt ? '／' + fmtMD(x.orderedAt) + ' 発注' : ''}</div>
     <p class="small muted">届いた数を確認して「入荷を登録」。予定より少なければ残りは入荷待ちに残ります。${pr.received ? `（発注 ${x.qty}${esc(x.unit)} のうち ${pr.received} は受取済み）` : ''}</p>
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="${remain}" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
-    <div class="field"><label for="who">受け取った人（任意）</label><input id="who" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
+    <div class="field"><label for="by-name">受け取った人（任意）</label><input id="by-name" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
     <button class="btn in" id="go">入荷を登録</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
   const qty = $('#qty', body);
@@ -389,7 +429,9 @@ function openReceiveSheet(x) {
   $('#go', body).onclick = () => {
     let n; try { n = readQty(qty.value, 'in'); } catch (e) { toast(e.message); return; }
     if (n > remain && !confirm(`残りの予定（${remain}）より多い数です。このまま登録しますか？`)) return;
-    let it; try { it = receiveExpected(x, n, $('#who', body).value.trim()); } catch (e) { console.error(e); toast(e.already ? e.message : SAVE_FAIL_MSG, 6000); if (e.already) { closeSheet(); render(); } return; }
+    const who = $('#by-name', body).value.trim();
+    let it; try { it = receiveExpected(x, n, who); } catch (e) { console.error(e); toast(e.already ? e.message : SAVE_FAIL_MSG, 6000); if (e.already) { closeSheet(); render(); } return; }
+    rememberUser(who);
     closeSheet(); toast(`入荷 ${it.name} ${n}${it.unit} を登録（在庫 ${computeStock().stock[it.id] || 0}）`); render();
   };
 }
@@ -522,7 +564,7 @@ function openSetSheet(it, cur) {
     <p class="muted small">実際に数えた在庫数を入れてください。記録上の在庫（${cur}）がこの数に置き換わります。</p>
     ${pending ? '<p class="small" style="color:var(--warn)">※ 他の端末の記録がまだ届いていない可能性があります（右上の⟳で同期してから棚卸すると正確です）</p>' : ''}
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="0" step="1" value="${cur}" aria-label="在庫数"><button id="plus" aria-label="1増やす">＋</button></div>
-    <div class="field"><label for="who">数えた人（任意）</label><input id="who" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
+    <div class="field"><label for="by-name">数えた人（任意）</label><input id="by-name" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
     <div class="field"><label for="note">メモ</label><input id="note" type="text" placeholder="例：月末棚卸" maxlength="200"></div>
     <button class="btn" id="go">この数で確定</button>
     <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
@@ -532,8 +574,10 @@ function openSetSheet(it, cur) {
   $('#cancel', body).onclick = closeSheet;
   $('#go', body).onclick = () => {
     let n; try { n = readQty(qty.value, 'set'); } catch (e) { toast(e.message); qty.focus(); return; }
-    try { addEvent({ type: 'set', itemId: it.id, qty: n, user: $('#who', body).value.trim(), note: $('#note', body).value.trim() }); }
+    const who = $('#by-name', body).value.trim();
+    try { addEvent({ type: 'set', itemId: it.id, qty: n, user: who, note: $('#note', body).value.trim() }); }
     catch (e) { console.error(e); toast(SAVE_FAIL_MSG, 6000); return; }
+    rememberUser(who);
     closeSheet(); toast(`${it.name} の在庫を ${n} にしました`); render();
   };
 }
@@ -692,7 +736,11 @@ function renderSettings() {
         <div>アカウント</div><div>${esc(dbx.account || '未接続')}</div>
         <div>この端末ID</div><div class="mono small">${esc(deviceId)}</div>
       </div>
-      <details ${connected ? '' : 'open'} style="margin-top:8px"><summary>接続設定</summary>
+      <details ${connected ? '' : 'open'} style="margin-top:8px"><summary>招待リンクを貼り付けて接続${connected ? 'し直す' : 'する'}</summary>
+        <p class="small muted">LINEで届いた在庫アプリのメッセージ（またはリンク）をコピーして、ここに貼り付けてください。ホーム画面のアプリで「端末のみ（未共有）」と出るときに使います。</p>
+        <div class="row"><input id="paste-link" class="search grow" placeholder="ここに貼り付け" autocapitalize="off" autocomplete="off"><button class="btn sm" id="paste-go">接続</button></div>
+      </details>
+      <details style="margin-top:8px"><summary>接続設定（管理者用）</summary>
         ${secure ? '' : '<p class="small" style="color:var(--danger)">※ Dropbox連携は https（またはlocalhost）で開いたときだけ使えます。</p>'}
         <div class="field"><label for="dbx-key">Dropbox App Key（管理者が dropbox.com/developers で作成）</label><input id="dbx-key" value="${esc(dbx.appKey)}" autocapitalize="off" autocomplete="off"></div>
         <div class="field"><label for="dbx-path">保存先フォルダ（Dropbox内のパス。チーム共有フォルダの中を推奨）</label><div class="row"><input id="dbx-path" class="grow" value="${esc(dbx.basePath)}" placeholder="/十勝野ポーク チーム フォルダ/CM農場在庫アプリ"><button class="btn sm secondary" id="dbx-pick" ${connected ? '' : 'disabled'}>一覧から選ぶ</button></div>${dbx.pathRoot ? '<p class="small muted" style="margin:4px 0 0">チームスペース（Dropbox Business）のフォルダを基準にしています</p>' : ''}</div>
@@ -763,6 +811,15 @@ function renderSettings() {
     dbx.appKey = $('#dbx-key').value.trim(); dbx.basePath = newBase;
     state.cfg.pollSec = Math.max(10, Math.round(+$('#poll').value) || 30); state.cfg.liffId = $('#liff').value.trim(); persistMeta();
   };
+  $('#paste-go').onclick = () => {
+    const m = $('#paste-link').value.match(/setup=([A-Za-z0-9_-]{20,})/);
+    if (!m) { toast('招待リンクが見つかりません。LINEのメッセージをコピーして貼り付けてください', 4000); return; }
+    let r; try { r = applySetup(m[1], true); } catch (e) { toast('招待リンクの読み込みに失敗：' + e.message, 5000); return; }
+    if (r === 'same') { toast('すでに同じ設定で接続されています'); return; }
+    if (r !== 'applied') return;
+    toast('接続しました。同期します'); setupBanners(); startPolling();
+    refreshAccountInfo().catch(() => { }).then(() => syncNow(true, true)).then(() => { if (state.tab === 'settings') renderSettings(); });
+  };
   $('#dbx-save').onclick = () => { readDbxForm(); toast('保存しました'); startPolling(); scheduleSync(); };
   $('#dbx-pick').onclick = async () => {
     let folders;
@@ -787,11 +844,10 @@ function renderSettings() {
   };
   $('#dbx-logout').onclick = () => {
     if (!confirm('Dropboxとの接続を切りますか？（記録は端末に残ります）' + (pend.count ? `\n※ 未送信が ${pend.count}件 あります。切断すると共有されません。` : ''))) return;
-    Object.assign(dbx, { refreshToken: '', accessToken: '', expiresAt: 0, account: '' }); state.revs = {}; persistMeta(); setSync('off'); renderSettings();
+    Object.assign(dbx, { refreshToken: '', accessToken: '', expiresAt: 0, account: '' }); state.revs = {}; persistMeta(); setSync('off'); setupBanners(); renderSettings();
   };
   $('#invite').onclick = () => {
-    const payload = { v: 1, appKey: dbx.appKey, basePath: dbx.basePath, pathRoot: dbx.pathRoot || '', refreshToken: dbx.refreshToken, users: state.users, liffId: state.cfg.liffId, pollSec: state.cfg.pollSec };
-    const link = url + '?openExternalBrowser=1#setup=' + b64url(new TextEncoder().encode(JSON.stringify(payload)));
+    const link = url + '?openExternalBrowser=1' + setupHash(false);
     shareText(`CM農場 在庫アプリの招待リンクです。タップして開き、「ホーム画面に追加」してください。\n${link}`, '在庫アプリ 招待リンク');
   };
   $('#copy-url').onclick = () => shareText(`CM農場 在庫アプリ\n${url}?openExternalBrowser=1\n開いたら「ホーム画面に追加」してください。`, '在庫アプリ');
@@ -841,9 +897,17 @@ function openUserSheet(after) {
 
 // ---------- 画面切替 ----------
 function render() {
+  viewStale = false;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
   ({ out: () => renderPick('out'), in: () => renderPick('in'), stock: renderStock, log: renderLog, settings: renderSettings })[state.tab]();
   updateHeader();
+}
+/** 同期で内容が変わったときの描き直し。入力中（検索欄・設定・入力シート）は邪魔せず、スクロール位置も保つ */
+function refreshView() {
+  const a = document.activeElement;
+  const typing = a && view.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  if (state.tab === 'settings' || sheetOpen() || typing) { viewStale = true; updateHeader(); return; }
+  const y = window.scrollY; render(); window.scrollTo(0, y);
 }
 document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => { state.tab = b.dataset.tab; state.filters.q = ''; state.filters.logLimit = 400; render(); window.scrollTo(0, 0); }));
 
@@ -897,10 +961,8 @@ $('#sync-btn').onclick = () => { if (!state.cfg.dropbox.refreshToken) { state.ta
 function showBanner(html, cls = '') { const b = $('#banner'); b.className = 'banner ' + cls; b.innerHTML = html; }
 function hideBanner() { $('#banner').className = 'banner hidden'; }
 function setupBanners() {
-  const ua = navigator.userAgent; const dismissed = load(LS.dismiss, 0);
-  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  const isLine = /\bLine\//i.test(ua);
-  const isIOS = /iPhone|iPad|iPod/.test(ua);
+  const dismissed = load(LS.dismiss, 0);
+  const standalone = IS_STANDALONE, isLine = IS_LINE, isIOS = IS_IOS;
   if (state.swWaiting) {
     showBanner(`<span>新しいバージョンがあります（入力中の内容は先に登録してください）</span><button id="b-upd">更新</button>`, 'info');
     $('#b-upd').onclick = () => {
@@ -909,11 +971,17 @@ function setupBanners() {
     };
     return;
   }
+  if (!state.cfg.dropbox.refreshToken) {
+    // 未接続：記録がこのスマホの中だけに残り、みんなと共有されない状態
+    showBanner(`<span><b>まだ共有されていません。</b>LINEで届いた招待リンクを開くか、設定に貼り付けてください</span><button id="b-setup">設定を開く</button>`);
+    $('#b-setup').onclick = () => { state.tab = 'settings'; render(); window.scrollTo(0, 0); };
+    return;
+  }
   if (standalone || Date.now() - dismissed < 7 * 86400e3) { hideBanner(); return; }
   const dismiss = `<button class="x" id="b-x" aria-label="閉じる">×</button>`;
   if (isLine) {
-    const u = new URL(location.href); u.searchParams.set('openExternalBrowser', '1');
-    showBanner(`<span>LINEの中では「ホーム画面に追加」ができません。<b>通常のブラウザで開いて</b>ください。</span><a href="${esc(u.href)}" target="_blank" rel="noopener"><button>ブラウザで開く</button></a>`);
+    const href = redirectUri() + '?openExternalBrowser=1' + setupHash(true);     // 接続設定ごと通常のブラウザへ渡す
+    showBanner(`<span>LINEの中では「ホーム画面に追加」ができません。<b>通常のブラウザで開いて</b>ください。</span><a href="${esc(href)}" target="_blank" rel="noopener"><button>ブラウザで開く</button></a>`);
   } else if (state.installPrompt) {
     showBanner(`<span>アプリとしてホーム画面に入れると次から1タップで開けます</span><button id="b-inst">インストール</button>${dismiss}`, 'info');
     $('#b-inst').onclick = async () => { state.installPrompt.prompt(); await state.installPrompt.userChoice; state.installPrompt = null; hideBanner(); };
@@ -964,7 +1032,14 @@ async function ensureToken() {
   if (!d.refreshToken) throw new Error('Dropbox未接続');
   if (d.accessToken && Date.now() < d.expiresAt) return d.accessToken;
   const r = await fetch('https://api.dropboxapi.com/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: d.refreshToken, client_id: d.appKey }) });
-  const j = await r.json(); if (!r.ok) { if (j.error === 'invalid_grant') { d.refreshToken = ''; persistMeta(); } throw new Error(j.error_description || j.error || '認証の更新に失敗'); }
+  const j = await r.json();
+  if (!r.ok) {
+    if (j.error === 'invalid_grant') {         // 招待リンクが無効にされた：同じリンクを取り込み直さないよう覚えておき、未接続に戻す
+      state.cfg.revoked = fingerprint(d.refreshToken); d.refreshToken = ''; persistMeta(); setupBanners();
+      throw new Error('接続が無効になりました。新しい招待リンクをもらってください');
+    }
+    throw new Error(j.error_description || j.error || '認証の更新に失敗');
+  }
   d.accessToken = j.access_token; d.expiresAt = Date.now() + (j.expires_in - 60) * 1000; persistMeta();
   return d.accessToken;
 }
@@ -1016,15 +1091,16 @@ async function syncDoc(key, base, metaList, errors) {
   const path = `${base}/${doc.file}`; const k = path.toLowerCase();
   const meta = metaList.find((f) => f.path_lower === k);
   let rev = meta ? meta.rev : null;
+  let changed = false;
   if (meta && state.revs[k] !== meta.rev) {
     try {
       const dl = await dbxDownload(path);
       if (dl) {
         const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text)));
-        if (r.changed) { doc.persist(r.items); doc.set(r.items); stockCache = null; }   // 保存できてから反映
+        if (r.changed) { doc.persist(r.items); doc.set(r.items); stockCache = null; changed = true; }   // 保存できてから反映
         const nextRevs = Object.assign({}, state.revs, { [k]: dl.rev }); writeLS(LS.revs, nextRevs); state.revs = nextRevs; rev = dl.rev;
       }
-    } catch (e) { errors.push(`${doc.file}: ${e.message}`); return; }
+    } catch (e) { errors.push(`${doc.file}: ${e.message}`); return changed; }
   }
   if (!meta || docPending(key)) {
     let uploaded = false;
@@ -1036,7 +1112,7 @@ async function syncDoc(key, base, metaList, errors) {
       } catch (e) {
         if (e.status === 409 && /conflict/.test(e.body)) {
           const dl = await dbxDownload(path);
-          if (dl) { const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text))); if (r.changed) { doc.persist(r.items); doc.set(r.items); } rev = dl.rev; state.revs[k] = dl.rev; }
+          if (dl) { const r = doc.merge(doc.get(), doc.validate(JSON.parse(dl.text))); if (r.changed) { doc.persist(r.items); doc.set(r.items); stockCache = null; changed = true; } rev = dl.rev; state.revs[k] = dl.rev; }
           continue;
         }
         throw e;
@@ -1044,6 +1120,7 @@ async function syncDoc(key, base, metaList, errors) {
     }
     if (!uploaded) throw new Error(`${doc.label}の送信が競合して失敗しました。しばらくしてから再同期してください`);
   }
+  return changed;
 }
 
 /**
@@ -1071,10 +1148,8 @@ async function syncNow(manual, quiet) {
         const nextRevs = Object.assign({}, state.revs, { [f.path_lower]: dl.rev }); writeLS(LS.revs, nextRevs); state.revs = nextRevs;
       } catch (e) { errors.push(`${f.name}: ${e.message}`); }
     }
-    // 2) 共有文書（品目マスタ・入荷予定・共有設定）
-    const metaList = await dbxList(base);
-    for (const key of Object.keys(DOCS)) await syncDoc(key, base, metaList, errors);
-    // 3) この端末の記録を書く（自分のファイルだけ）。送った内容の指紋を記録し、送信中に増えた分は未送信として残す
+    // 2) この端末の記録を書く（自分のファイルだけ）。送った内容の指紋を記録し、送信中に増えた分は未送信として残す
+    //    共有文書より先に送る：入荷予定の「入荷済み」だけが先に届き、受取記録がまだ無い、という状態を他の端末に見せないため
     const myPath = `${base}/events/${deviceId}.json`;
     const remoteMine = files.find((f) => f.path_lower === myPath.toLowerCase());
     if (eventsPending() || (!remoteMine && ownEvents().length)) {
@@ -1082,6 +1157,10 @@ async function syncNow(manual, quiet) {
       const up = await dbxUpload(myPath, text, 'overwrite');
       state.revs[myPath.toLowerCase()] = up.rev; state.sent.events = fingerprint(text);
     }
+    // 3) 共有文書（品目マスタ・入荷予定・共有設定）
+    const metaList = await dbxList(base);
+    let docsChanged = false;
+    for (const key of Object.keys(DOCS)) docsChanged = (await syncDoc(key, base, metaList, errors)) || docsChanged;
     state.sent.base = base;
     // 4) 復元で持ち込んだ他端末の記録（復元ファイルとして送信。ファイル名は固定なので再試行しても重複しない）
     for (const rec of state.recovery.slice()) {
@@ -1096,9 +1175,8 @@ async function syncNow(manual, quiet) {
     if (errors.length) { setSync('err', errors[0] + (errors.length > 1 ? ` 他${errors.length - 1}件` : '')); }
     else if (anyPending()) { setSync('pending'); scheduleSync(); }
     else setSync('ok');
-    if (got) { if (!quiet) toast(`他の端末の記録 ${got}件 を取り込みました`); if (state.tab !== 'settings') render(); else updateHeader(); }
-    else if (manual && !quiet) toast(errors.length ? '一部のファイルを取り込めませんでした：' + errors[0] : (state.sync.status === 'pending' ? '送信待ちがあります。もう一度同期します' : '最新の状態です'), errors.length ? 6000 : 2200);
-    else if (!manual && state.tab !== 'settings' && !sheetOpen()) render();   // 入荷予定・マスタの変更を画面に反映
+    if (manual && !quiet) toast(errors.length ? '一部のファイルを取り込めませんでした：' + errors[0] : (got ? `他の端末の記録 ${got}件 を取り込みました` : (state.sync.status === 'pending' ? '送信待ちがあります。もう一度同期します' : '最新の状態です')), errors.length ? 6000 : 2200);
+    if (got || docsChanged) refreshView();        // 変化があったときだけ描き直す（入力中は邪魔しない）
     return errors.length === 0 && state.sync.status === 'ok';
   } catch (e) {
     console.error(e); setSync('err', e.message); if (manual && !quiet) toast('同期エラー：' + e.message, 6000);
@@ -1114,21 +1192,63 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('online', () => syncNow(false));
 window.addEventListener('offline', () => setSync('off'));
 
-// 招待リンク（#setup=...）の取り込み
+// ---------- 招待リンク（#setup=...） ----------
+/** 接続設定の中身。personal=true は「同じ人の別の保存領域」へ渡す用（名前・前回の持ち出し先も入れる） */
+function setupPayload(personal) {
+  const d = state.cfg.dropbox;
+  const p = { v: 1, appKey: d.appKey, basePath: d.basePath, pathRoot: d.pathRoot || '', refreshToken: d.refreshToken, users: state.users, liffId: state.cfg.liffId, pollSec: state.cfg.pollSec };
+  if (personal) { p.me = state.cfg.user || ''; p.stage = state.cfg.lastStage || ''; }
+  return p;
+}
+const setupHash = (personal) => (state.cfg.dropbox.refreshToken ? '#setup=' + b64url(new TextEncoder().encode(JSON.stringify(setupPayload(personal)))) : '');
+
+/** 招待リンクの中身を取り込む。戻り値 'applied'（取り込んだ）/ 'same'（すでに同じ設定）/ 'skipped'（上書きを断った）。不正なら例外 */
+function applySetup(encoded, manual) {
+  let p; try { p = JSON.parse(new TextDecoder().decode(unb64url(encoded))); } catch (e) { throw new Error('リンクが途中で切れているか、内容が不正です'); }
+  if (!p || typeof p.appKey !== 'string' || typeof p.refreshToken !== 'string' || !p.appKey || !p.refreshToken) throw new Error('リンクの内容が不正です');
+  const d = state.cfg.dropbox;
+  const base = typeof p.basePath === 'string' && p.basePath.startsWith('/') ? p.basePath : d.basePath;
+  const root = typeof p.pathRoot === 'string' ? p.pathRoot : '';
+  let usersChanged = false;
+  if (Array.isArray(p.users)) for (const u of p.users) if (typeof u === 'string' && u && u.length <= 50 && !state.users.includes(u)) { state.users.push(u); usersChanged = true; }
+  if (d.refreshToken === p.refreshToken && d.appKey === p.appKey && d.basePath === base && (d.pathRoot || '') === root) { if (usersChanged) save(LS.users, state.users); return 'same'; }
+  // 無効になったリンクを起動URLから自動で取り込み直さない（手で貼り付けた場合は試せる）
+  if (!manual && state.cfg.revoked && state.cfg.revoked === fingerprint(p.refreshToken)) throw new Error('この招待リンクは無効になっています。新しいリンクをもらってください');
+  if (d.refreshToken && !confirm('すでにDropbox接続があります。招待リンクの設定で上書きしますか？')) return 'skipped';
+  Object.assign(d, { appKey: p.appKey, basePath: base, refreshToken: p.refreshToken, accessToken: '', expiresAt: 0, account: '', pathRoot: root });
+  if (typeof p.liffId === 'string') state.cfg.liffId = p.liffId;
+  if (Number.isInteger(p.pollSec) && p.pollSec >= 10) state.cfg.pollSec = p.pollSec;
+  if (typeof p.me === 'string' && p.me && p.me.length <= 50 && !state.cfg.user) state.cfg.user = p.me;
+  if (typeof p.stage === 'string' && STAGES.includes(p.stage) && !state.cfg.lastStage) state.cfg.lastStage = p.stage;
+  state.cfg.revoked = ''; state.revs = {}; persistMeta();
+  return 'applied';
+}
 function handleSetupLink() {
   const m = location.hash.match(/^#setup=([A-Za-z0-9_-]+)/); if (!m) return;
-  history.replaceState(null, '', redirectUri());
+  const connected = !!state.cfg.dropbox.refreshToken;
+  // iPhone のホーム画面アプリは、起動URLに接続設定が付いたまま毎回開く。接続済みなら何もしない
+  if (IS_IOS && IS_STANDALONE && connected) { history.replaceState(null, '', redirectUri()); return; }
   try {
-    const p = JSON.parse(new TextDecoder().decode(unb64url(m[1])));
-    if (typeof p.appKey !== 'string' || typeof p.refreshToken !== 'string' || !p.appKey || !p.refreshToken) throw new Error('リンクの内容が不正です');
-    if (state.cfg.dropbox.refreshToken && !confirm('すでにDropbox接続があります。招待リンクの設定で上書きしますか？')) return;
-    const basePathNew = typeof p.basePath === 'string' && p.basePath.startsWith('/') ? p.basePath : state.cfg.dropbox.basePath;
-    Object.assign(state.cfg.dropbox, { appKey: p.appKey, basePath: basePathNew, refreshToken: p.refreshToken, accessToken: '', expiresAt: 0, account: '', pathRoot: typeof p.pathRoot === 'string' ? p.pathRoot : '' });
-    if (Array.isArray(p.users)) for (const u of p.users) if (typeof u === 'string' && u && u.length <= 50 && !state.users.includes(u)) state.users.push(u);
-    if (typeof p.liffId === 'string') state.cfg.liffId = p.liffId; if (Number.isInteger(p.pollSec) && p.pollSec >= 10) state.cfg.pollSec = p.pollSec;
-    state.revs = {}; persistMeta(); toast('共有設定を取り込みました', 3500);
-    setTimeout(() => refreshAccountInfo().catch(() => { }).then(() => syncNow(true)), 300);   // アカウント名とチームスペースの判定も取り直す
+    if (applySetup(m[1]) === 'applied') {
+      toast('共有設定を取り込みました', 3500);
+      setTimeout(() => refreshAccountInfo().catch(() => { }).then(() => syncNow(true, true)), 300);   // アカウント名とチームスペースの判定も取り直す
+    }
   } catch (e) { toast('招待リンクの読み込みに失敗：' + e.message, 5000); }
+  history.replaceState(null, '', redirectUri());
+}
+/**
+ * iPhone/iPad の Safari では、接続設定を URL（#setup=…）に残しておく。
+ * 「ホーム画面に追加」で作られるアプリは Safari と保存領域が別なので、起動URLから設定を引き継がせるため。
+ * manifest があると起動URLが固定されるので、接続済みのときは外す（＝今のURLがホーム画面に登録される）。
+ */
+function syncAddressBar() {
+  if (!IS_IOS || IS_STANDALONE) return;
+  if (new URLSearchParams(location.search).has('code')) return;      // Dropbox ログインの戻り処理中
+  const hash = setupHash(true);
+  const want = redirectUri() + hash;
+  if (location.href !== want) history.replaceState(null, '', want);
+  const link = document.querySelector('link[rel="manifest"]');
+  if (hash && link) link.remove();
 }
 
 // LINEミニアプリ（LIFF）：設定されていれば名前を自動取得
@@ -1164,6 +1284,7 @@ async function initSW() {
 (async function main() {
   handleSetupLink();
   await dbxHandleRedirect();
+  syncAddressBar();
   render();
   setupBanners();
   initSW();
@@ -1172,5 +1293,5 @@ async function initSW() {
 })();
 
 // デバッグ・検証用（tools/ の手順とブラウザのコンソールから使う）
-window.ZK = { state, syncNow, computeStock, dbxRPC, dbxList, dbxDownload, dbxUpload, apiArg, net, addEvent, pendingSummary, eventsPending, masterPending, docPending, restoreBackup, deviceId, version: APP_VERSION, currentAlerts, DOCS, expectedProgress, waitingExpected, receiveExpected, healExpected };
+window.ZK = { state, syncNow, computeStock, dbxRPC, dbxList, dbxDownload, dbxUpload, apiArg, net, addEvent, pendingSummary, eventsPending, masterPending, docPending, restoreBackup, deviceId, version: APP_VERSION, currentAlerts, DOCS, expectedProgress, waitingExpected, receiveExpected, healExpected, setupHash, applySetup, env: { IS_IOS, IS_STANDALONE, IS_LINE } };
 })();

@@ -3,7 +3,7 @@
  * - キャッシュの削除は 'zaiko-' で始まるものだけ（同じオリジンの別アプリを消さない）
  * - 正常応答(res.ok)だけをキャッシュし、HTMLの代替は画面遷移（navigate）のときだけ返す
  */
-const VERSION = 'v1.3.0';
+const VERSION = 'v1.3.1';
 const PREFIX = 'zaiko-';
 const CACHE = PREFIX + VERSION;
 const SHELL = [
