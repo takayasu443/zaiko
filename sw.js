@@ -4,7 +4,7 @@
  * - 正常応答(res.ok)だけをキャッシュし、HTMLの代替は画面遷移（navigate）のときだけ返す
  * - アプリのファイルは毎回サーバーに確認して取る（ブラウザの一時キャッシュで新旧が混ざらないように）
  */
-const VERSION = 'v1.3.3';
+const VERSION = 'v1.3.4';
 const PREFIX = 'zaiko-';
 const CACHE = PREFIX + VERSION;
 const SHELL = [

@@ -1,9 +1,10 @@
-/* CM農場 在庫アプリ（入出庫）  v1.3.3
+/* CM農場 在庫アプリ（入出庫）  v1.3.4
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
  * - 共通ロジックは core.js（検証・在庫計算・統合・アラート）。この file は画面と保存・同期の制御。
  *
+ * v1.3.4（2026-11-11）入力シートを小さい画面でも収める：余白を詰め、「やめる／登録」を横並びにして下に固定（登録ボタンが常に見える）
  * v1.3.1（2026-11-10 全員配布前の最終点検）
  *   ・iPhone のホーム画面アプリは Safari と保存領域が別。接続設定を起動URLで引き継ぐ／招待リンクの貼り付けでも接続できる
  *   ・未接続のときはバナーで知らせる。自動同期は入力中の画面を描き直さない
@@ -19,7 +20,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.3';
+const APP_VERSION = '1.3.4';
 const C = window.ZKCore;
 const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url, receiptEventId } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉', '古内'];
@@ -306,8 +307,7 @@ function openQtySheet(it, mode) {
     <div class="quick">${[1, 2, 5, 10].map((n) => `<button data-q="${n}">${n}</button>`).join('')}</div>
     ${isOut ? '' : `<div class="field"><label for="by-name">受け取った人（任意）</label><input id="by-name" list="names" value="${esc(state.cfg.user)}" maxlength="50" placeholder="例：古内"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>`}
     <div class="field"><label for="note">メモ（任意）</label><input id="note" type="text" placeholder="${isOut ? '例：豚房番号、用途' : '例：伝票番号'}" maxlength="200"></div>
-    <button class="btn ${isOut ? 'out' : 'in'}" id="go">${isOut ? '持ち出しを登録' : '入荷を登録'}</button>
-    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+    <div class="actions"><button class="btn secondary" id="cancel">やめる</button><button class="btn ${isOut ? 'out' : 'in'}" id="go">${isOut ? '持ち出しを登録' : '入荷を登録'}</button></div>`);
   const qty = $('#qty', body);
   const setQ = (n) => { qty.value = String(Math.max(1, Math.round(n) || 1)); };
   $('#minus', body).onclick = () => setQ(+qty.value - 1);
@@ -420,8 +420,7 @@ function openReceiveSheet(x) {
     <p class="small muted">届いた数を確認して「入荷を登録」。予定より少なければ残りは入荷待ちに残ります。${pr.received ? `（発注 ${x.qty}${esc(x.unit)} のうち ${pr.received} は受取済み）` : ''}</p>
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="1" step="1" value="${remain}" aria-label="数量"><button id="plus" aria-label="1増やす">＋</button></div>
     <div class="field"><label for="by-name">受け取った人（任意）</label><input id="by-name" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
-    <button class="btn in" id="go">入荷を登録</button>
-    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+    <div class="actions"><button class="btn secondary" id="cancel">やめる</button><button class="btn in" id="go">入荷を登録</button></div>`);
   const qty = $('#qty', body);
   $('#minus', body).onclick = () => { qty.value = String(Math.max(1, (+qty.value || 1) - 1)); };
   $('#plus', body).onclick = () => { qty.value = String((+qty.value || 0) + 1); };
@@ -455,8 +454,7 @@ function openExpectedAddSheet() {
       <div class="field grow"><label for="ex-qty">数量</label><input id="ex-qty" type="number" inputmode="numeric" min="1" step="1" value="1"></div>
       <div class="field grow"><label for="ex-sup">仕入先</label><input id="ex-sup" maxlength="100"></div>
     </div>
-    <button class="btn" id="save" disabled>入荷待ちに追加</button>
-    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+    <div class="actions"><button class="btn secondary" id="cancel">やめる</button><button class="btn" id="save" disabled>入荷待ちに追加</button></div>`);
   const lst = $('#ex-list', body);
   const draw = () => {
     const q = $('#ex-q', body).value.trim().toLowerCase();
@@ -566,8 +564,7 @@ function openSetSheet(it, cur) {
     <div class="stepper"><button id="minus" aria-label="1減らす">−</button><input id="qty" type="number" inputmode="numeric" min="0" step="1" value="${cur}" aria-label="在庫数"><button id="plus" aria-label="1増やす">＋</button></div>
     <div class="field"><label for="by-name">数えた人（任意）</label><input id="by-name" list="names" value="${esc(state.cfg.user)}" maxlength="50"><datalist id="names">${state.users.map((u) => `<option value="${esc(u)}">`).join('')}</datalist></div>
     <div class="field"><label for="note">メモ</label><input id="note" type="text" placeholder="例：月末棚卸" maxlength="200"></div>
-    <button class="btn" id="go">この数で確定</button>
-    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+    <div class="actions"><button class="btn secondary" id="cancel">やめる</button><button class="btn" id="go">この数で確定</button></div>`);
   const qty = $('#qty', body);
   $('#minus', body).onclick = () => { qty.value = String(Math.max(0, (+qty.value || 0) - 1)); };
   $('#plus', body).onclick = () => { qty.value = String((+qty.value || 0) + 1); };
@@ -601,8 +598,7 @@ function openEditSheet(it) {
     <div class="field"><label for="f-use">使用間隔の目安（日）：この日数を超えて持ち出しが無いとアラート（0=なし）</label><input id="f-use" type="number" inputmode="numeric" min="0" step="1" value="${it.useDays || 0}"></div>
     <div class="field"><label for="f-note">備考</label><input id="f-note" value="${esc(it.note || '')}" placeholder="例：土日納品不可" maxlength="500"></div>
     ${isNew ? '' : `<div class="field"><label><input type="checkbox" id="f-active" ${it.active !== false ? 'checked' : ''}> 在庫管理する（外すと一覧から隠れます）</label></div>`}
-    <button class="btn" id="save">保存</button>
-    <button class="btn secondary" id="cancel" style="margin-top:8px">やめる</button>`);
+    <div class="actions"><button class="btn secondary" id="cancel">やめる</button><button class="btn" id="save">保存</button></div>`);
   $('#cancel', body).onclick = closeSheet;
   $('#save', body).onclick = () => {
     const name = $('#f-name', body).value.trim(); if (!name) { toast('品名を入れてください'); return; }
