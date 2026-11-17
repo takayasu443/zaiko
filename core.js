@@ -12,7 +12,7 @@
   const LOCATIONS = ['事務所前', 'コンテナ左', 'コンテナ右', '冷蔵庫'];
   const EVENT_TYPES = ['in', 'out', 'set', 'void'];
   /** 持ち出し先（ステージ）。「その他」のときだけ名前を入れる */
-  const STAGES = ['交配舎', '分娩舎', '離乳舎', '肥育舎', '洗浄チーム', '水小屋（柴田）', 'その他'];
+  const STAGES = ['交配舎', '分娩舎', '離乳舎', '肥育舎', '別棟', '洗浄チーム', '水小屋（柴田）', 'その他'];
   const EXPECTED_STATUS = ['waiting', 'received', 'cancelled'];
   const ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
   const DAY = 86400e3;
