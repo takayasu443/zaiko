@@ -1,9 +1,10 @@
-/* CM農場 在庫アプリ（入出庫）  v1.3.5
+/* CM農場 在庫アプリ（入出庫）  v1.3.6
  * - スマホ1台でも動く（データは端末内に保存）
  * - Dropbox連携を設定すると、全員のスマホが同じDropboxフォルダを介して自動で同期される
  * - 端末ごとに自分の記録ファイルだけを書くので、同時に使っても上書き事故が起きない
  * - 共通ロジックは core.js（検証・在庫計算・統合・アラート）。この file は画面と保存・同期の制御。
  *
+ * v1.3.6（2026-11-19）持ち出し／入荷の一覧の上にあった「最近持ち出した（入荷した）もの」を外す。同じ品目が上と下に2回出て「2重になっている」と指摘があったため。一覧は各品目1回だけ
  * v1.3.5（2026-11-18）持ち出し先に「別棟」を追加（肥育舎の次）。古い版の端末も別棟の記録をそのまま受け取れる（持ち出し先は文字列として検証）
  * v1.3.4（2026-11-11）入力シートを小さい画面でも収める：余白を詰め、「やめる／登録」を横並びにして下に固定（登録ボタンが常に見える）
  * v1.3.1（2026-11-10 全員配布前の最終点検）
@@ -21,7 +22,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = '1.3.5';
+const APP_VERSION = '1.3.6';
 const C = window.ZKCore;
 const { CATEGORIES, LOCATIONS, STAGES, DAY, fingerprint, readQty, validateEvents, validateItems, validateExpected, validateSettings, pruneExpected, mergeEvents, mergeById, apiArg, b64url, unb64url, receiptEventId } = C;
 const DEFAULT_USERS = ['富樫', '富士', '宮本', '直人', '土居', '福田', '千葉', '古内'];
@@ -263,26 +264,13 @@ function renderPick(mode) {
     ${isOut ? '' : '<div id="expected-box"></div>'}
     <input class="search" id="q" type="search" placeholder="品名・規格・仕入先で検索" value="${esc(state.filters.q)}" autocomplete="off">
     ${filterChips()}
-    <div id="recent"></div>
     <div class="list" id="list"></div>`;
-  const list = $('#list'); const recent = $('#recent');
+  const list = $('#list');
   if (!isOut) renderExpectedBox();
   const draw = () => {
     const { stock } = computeStock();
     const items = filteredItems();
     list.innerHTML = items.length ? items.map((it) => itemRow(it, stock)).join('') : `<div class="empty">該当する品目がありません。<br>設定 → 品目マスタ から追加できます。</div>`;
-    recent.innerHTML = '';
-    if (!state.filters.q) {
-      const seen = new Set(); const rec = [];
-      for (let i = state.events.length - 1; i >= 0 && rec.length < 6; i--) {
-        const e = state.events[i];
-        if (e.type !== mode || seen.has(e.itemId)) continue;
-        const it = itemById(e.itemId); if (!it || it.active === false) continue;
-        if ((state.filters.loc && it.location !== state.filters.loc) || (state.filters.cat && it.category !== state.filters.cat)) continue;
-        seen.add(e.itemId); rec.push(it);
-      }
-      if (rec.length) recent.innerHTML = `<h3>最近${isOut ? '持ち出した' : '入荷した'}もの</h3><div class="list" style="margin-bottom:12px">${rec.map((it) => itemRow(it, stock)).join('')}</div>`;
-    }
     view.querySelectorAll('.list .item[data-id]').forEach((b) => b.addEventListener('click', () => openQtySheet(itemById(b.dataset.id), mode)));
   };
   $('#q').addEventListener('input', (e) => { state.filters.q = e.target.value; draw(); });
