@@ -70,7 +70,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i0b320c96",
@@ -94,7 +94,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i266ade66",
@@ -106,7 +106,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i29841f2c",
@@ -118,7 +118,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ibe98bf0d",
@@ -202,7 +202,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ie841ff7e",
@@ -310,7 +310,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i_prrs",
@@ -322,7 +322,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "大竹先生",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i45aae975",
@@ -334,7 +334,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "大竹先生",
   "note": "",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "iaf665521",
@@ -346,7 +346,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "i7930aa77",
@@ -358,7 +358,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "if7126f58",
@@ -382,7 +382,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ibad2801e",
@@ -394,7 +394,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ie5fd4074",
@@ -406,7 +406,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "土日納品不可",
   "min": 0,
-  "active": true
+  "active": false
  },
  {
   "id": "ifa492937",
