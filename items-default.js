@@ -142,7 +142,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": false
+  "active": true
  },
  {
   "id": "i9f14fe82",
@@ -286,7 +286,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": false
+  "active": true
  },
  {
   "id": "ib27359b9",
@@ -670,7 +670,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "小田島",
   "note": "",
   "min": 0,
-  "active": false
+  "active": true
  },
  {
   "id": "ib8249ab9",
@@ -910,7 +910,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アグロ",
   "note": "",
   "min": 0,
-  "active": false
+  "active": true
  },
  {
   "id": "i49ff11ae",
@@ -1126,7 +1126,7 @@ window.DEFAULT_ITEMS = [
   "supplier": "アスコ",
   "note": "",
   "min": 0,
-  "active": false
+  "active": true
  },
  {
   "id": "i28672337",
@@ -1221,6 +1221,30 @@ window.DEFAULT_ITEMS = [
   "location": "コンテナ右",
   "supplier": "小田島",
   "note": "",
+  "min": 0,
+  "active": true
+ },
+ {
+  "id": "i_pulmotil",
+  "name": "プルモチル",
+  "spec": "",
+  "unit": "袋",
+  "category": "薬品",
+  "location": "コンテナ右",
+  "supplier": "",
+  "note": "2026-11-27 古内さんの依頼で追加",
+  "min": 0,
+  "active": true
+ },
+ {
+  "id": "i_denagard",
+  "name": "デナガード",
+  "spec": "",
+  "unit": "個",
+  "category": "薬品",
+  "location": "事務所前",
+  "supplier": "",
+  "note": "2026-11-27 古内さんの依頼で追加",
   "min": 0,
   "active": true
  }
